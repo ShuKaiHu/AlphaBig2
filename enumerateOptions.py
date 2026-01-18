@@ -1,5 +1,6 @@
 #enumerate options
 import pickle
+import warnings
 import itertools
 import numpy as np
 import gameLogic
@@ -7,8 +8,14 @@ import gameLogic
 nActions = np.array([13,33,31,330,1287,1694])
 nAcSum = np.cumsum(nActions[:-1])
 
-with open('actionIndices.pkl','rb') as f:  # Python 3: open(..., 'rb')
-    twoCardIndices, threeCardIndices, fourCardIndices, fiveCardIndices, inverseTwoCardIndices, inverseThreeCardIndices, inverseFourCardIndices, inverseFiveCardIndices = pickle.load(f)
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"dtype\(\): align should be passed.*",
+        category=Warning,
+    )
+    with open('actionIndices.pkl','rb') as f:  # Python 3: open(..., 'rb')
+        twoCardIndices, threeCardIndices, fourCardIndices, fiveCardIndices, inverseTwoCardIndices, inverseThreeCardIndices, inverseFourCardIndices, inverseFiveCardIndices = pickle.load(f)
 
 passInd = nActions[-1]
 
@@ -44,9 +51,13 @@ def fiveCardOptions(handOptions, prevHand=[],prevType=0):
     validInds = np.zeros((nActions[4],),dtype=int)
     c = 0
     cardInds = np.zeros((5,),dtype=int) #reuse
+
+    # When following, only allow the same 5-card type here.
+    # Overrides (four of a kind / straight flush) are handled elsewhere.
+    restrict_to_type = prevType if prevType in (1, 2, 3, 4) else 0
     
     #first deal with straights
-    if prevType == 2 or prevType == 3 or prevType == 4:
+    if restrict_to_type and restrict_to_type != 1:
         pass
     else:
         if len(handOptions.straights) > 0:
@@ -113,30 +124,31 @@ def fiveCardOptions(handOptions, prevHand=[],prevType=0):
         add_wrap_straights([13, 1, 2, 3, 4])   # 2 3 4 5 6
     
     #now deal with straight flushes
-    if len(handOptions.flushes) > 0:
-        for flush in handOptions.flushes:
-            nC = flush.size
-            for i1 in range(nC-4):
-                cardInds[0] = handOptions.cards[flush[i1]].indexInHand
-                for i2 in range(i1+1,nC-3):
-                    cardInds[1] = handOptions.cards[flush[i2]].indexInHand
-                    for i3 in range(i2+1,nC-2):
-                        cardInds[2] = handOptions.cards[flush[i3]].indexInHand
-                        for i4 in range(i3+1,nC-1):
-                            cardInds[3] = handOptions.cards[flush[i4]].indexInHand
-                            for i5 in range(i4+1,nC):
-                                cardInds[4] = handOptions.cards[flush[i5]].indexInHand
-                                handBeingPlayed = handOptions.cHand[cardInds]
-                                if not gameLogic.isStraightFlush(handBeingPlayed):
-                                    continue
-                                if prevType == 4:
-                                    if not gameLogic.compareStraights(handBeingPlayed, prevHand):
+    if not restrict_to_type or restrict_to_type == 4:
+        if len(handOptions.flushes) > 0:
+            for flush in handOptions.flushes:
+                nC = flush.size
+                for i1 in range(nC-4):
+                    cardInds[0] = handOptions.cards[flush[i1]].indexInHand
+                    for i2 in range(i1+1,nC-3):
+                        cardInds[1] = handOptions.cards[flush[i2]].indexInHand
+                        for i3 in range(i2+1,nC-2):
+                            cardInds[2] = handOptions.cards[flush[i3]].indexInHand
+                            for i4 in range(i3+1,nC-1):
+                                cardInds[3] = handOptions.cards[flush[i4]].indexInHand
+                                for i5 in range(i4+1,nC):
+                                    cardInds[4] = handOptions.cards[flush[i5]].indexInHand
+                                    handBeingPlayed = handOptions.cHand[cardInds]
+                                    if not gameLogic.isStraightFlush(handBeingPlayed):
                                         continue
-                                validInds[c] = fiveCardIndices[cardInds[0]][cardInds[1]][cardInds[2]][cardInds[3]][cardInds[4]]
-                                c += 1
+                                    if prevType == 4:
+                                        if not gameLogic.compareStraights(handBeingPlayed, prevHand):
+                                            continue
+                                    validInds[c] = fiveCardIndices[cardInds[0]][cardInds[1]][cardInds[2]][cardInds[3]][cardInds[4]]
+                                    c += 1
     
     #now deal with full houses
-    if prevType == 4 or prevType == 3:
+    if restrict_to_type and restrict_to_type != 2:
         pass
     else:
         if prevType == 2:
@@ -169,7 +181,7 @@ def fiveCardOptions(handOptions, prevHand=[],prevType=0):
                     c += 1
 
     #now deal with four of a kinds (with kicker)
-    if prevType != 4:
+    if not restrict_to_type or restrict_to_type == 3:
         quad_value_prev = None
         if prevType == 3:
             quad_value_prev = gameLogic.fourOfAKindValue(prevHand)

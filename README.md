@@ -1,14 +1,28 @@
-# Big 2 Self-Play Reinforcement Learning AI
-Big 2 is a 4 player game of imperfect information with quite a complicated action space (being able to choose to play singles, pairs, three of a kinds, two pairs, straights, flushes, full houses etc from an initial starting hand of 13 cards). The aim of the game is to is to be the first player to play all of your cards but to play the game well requires formulating a long term plan, thinking about what your opponents plans are and knowing when to play a hand and when to save a hand for later. This is my implementation of training an AI to learn the game purely via self-play deep reinforcement learning using the "Proximal Policy Optimization" algorithm. The results have been surprisingly good - my friends and I play this game A LOT every time we go on holiday and it has got to the point where it convincingly beats all of us over a decent amount of games.  
+# Big 2 自我對戰強化學習 AI
 
-If you run generateGUI.py you can play with the AI and also see the values it assigns to each state as well as the probability of choosing each option. I've also made a web app using Django so that you can play against the trained networks in a more proper setting <a href="https://big2-rl-4ba753215e7b.herokuapp.com/game/">here</a> (it may take a while to load). <a href="https://github.com/henrycharlesworth/big2_PPOalgorithm/blob/master/rules.md">Here</a> are the rules of the game.
+這個專案實作了「大老二（Big 2）」的遊戲環境與規則。Big 2 是 4 人不完全資訊紙牌遊戲，出牌型態複雜（單張、對子、三條、兩對、順子、同花、葫蘆等），需要長期規劃與對手意圖推測。
 
-<a href="https://big2-rl-4ba753215e7b.herokuapp.com/game/"><img src="https://henrycharlesworth.com/fileStorage/big2aiscreenshot.png" /></a>
+## 特色
+- Tkinter GUI 可直接遊玩
+- 內附規則說明與圖片資源
 
-I wrote up the details of how I trained the network and added it to arXiv <a href="https://arxiv.org/abs/1808.10442">here!</a>
+## 快速開始
 
-## Update (October 2023)
-Apologies, the Heroku app was down for a long time (lots of emails sent to an old account warning me, but I missed them). I have deployed a new app <a href="https://big2-rl-4ba753215e7b.herokuapp.com/game">here.</a>
+### 1) 直接遊玩 GUI
+```bash
+python generateGUI.py
+```
 
-Also as I may not keep that app running indefinitely, I have released the code so that you can run the game locally and play against the trained agents <a href="https://github.com/henrycharlesworth/big2_server/">here.</a>
+## 專案結構
+- `generateGUI.py`: GUI 對戰介面
+- `big2Game.py` / `gameLogic.py`: 遊戲規則與狀態轉換
+- `enumerateOptions.py`: 出牌選項枚舉
 
+## 相關連結
+- 規則說明：`rules.md`
+- 線上版本（可能需要等待啟動）：https://big2-rl-4ba753215e7b.herokuapp.com/game/
+- 訓練細節論文（arXiv）：https://arxiv.org/abs/1808.10442
+
+## 更新說明（2023/10）
+Heroku 線上版本曾經下線一段時間，現已重新部署在上述連結。若日後不再維護，作者也釋出可在本機遊玩的完整伺服器專案：
+https://github.com/henrycharlesworth/big2_server/

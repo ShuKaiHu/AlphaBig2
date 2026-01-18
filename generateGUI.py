@@ -3,41 +3,9 @@ from tkinter import messagebox
 from PIL import Image, ImageTk
 import numpy as np
 import big2Game
-import gameLogic
 import enumerateOptions
-from PPONetwork import PPONetwork, PPOModel
-import tensorflow as tf
-import joblib
 
 mainGame = big2Game.big2Game()
-
-inDim = 412
-outDim = 1695
-entCoef = 0.01
-valCoef = 0.5
-maxGradNorm = 0.5
-sess = tf.Session()
-#networks for players
-playerNetworks = {}
-playerNetworks[1] = PPONetwork(sess, inDim, outDim, "p1Net")
-playerNetworks[2] = PPONetwork(sess, inDim, outDim, "p2Net")
-playerNetworks[3] = PPONetwork(sess, inDim, outDim, "p3Net")
-playerNetworks[4] = PPONetwork(sess, inDim, outDim, "p4Net")
-playerModels = {}
-playerModels[1] = PPOModel(sess, playerNetworks[1], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[2] = PPOModel(sess, playerNetworks[2], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[3] = PPOModel(sess, playerNetworks[3], inDim, outDim, entCoef, valCoef, maxGradNorm)
-playerModels[4] = PPOModel(sess, playerNetworks[4], inDim, outDim, entCoef, valCoef, maxGradNorm)
-
-
-tf.global_variables_initializer().run(session=sess)
-
-#by default load current best
-params = joblib.load("modelParameters136500")
-playerNetworks[1].loadParams(params)
-playerNetworks[2].loadParams(params)
-playerNetworks[3].loadParams(params)
-playerNetworks[4].loadParams(params)
 
 top=tkinter.Tk()
 
@@ -55,10 +23,11 @@ cardImages = {}
 cardImages2 = {}
 cardImages3 = {}
 cardImages4 = {}
+resample_mode = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 for i in range(1,53):
     string = "cardImages/" + str(i) + ".png"
     cardImages[i] = Image.open(string)
-    cardImages[i] = cardImages[i].resize((63,91), Image.ANTIALIAS)
+    cardImages[i] = cardImages[i].resize((63,91), resample_mode)
     cardImages2[i] = cardImages[i].rotate(270, expand=True)
     cardImages3[i] = cardImages[i]
     cardImages4[i] = cardImages[i].rotate(90, expand=True)
@@ -67,7 +36,7 @@ for i in range(1,53):
     cardImages3[i] = ImageTk.PhotoImage(cardImages3[i])
     cardImages4[i] = ImageTk.PhotoImage(cardImages4[i])
 backOfCard = Image.open("cardImages/back.jpg")
-backOfCard = backOfCard.resize((63,91), Image.ANTIALIAS)
+backOfCard = backOfCard.resize((63,91), resample_mode)
 backOfCardRotated = backOfCard.rotate(90, expand=True)
 backOfCard = ImageTk.PhotoImage(backOfCard)
 backOfCardRotated = ImageTk.PhotoImage(backOfCardRotated)
@@ -125,12 +94,13 @@ def updatePrevHands():
             cX += dX
     cX = sX
     cY = sY + 3*dX
-    mostRecent = mainGame.handsPlayed[mainGame.goIndex-1].hand
-    for i in range(len(mostRecent)):
-        prevHand1[i].config(image=cardImages[mostRecent[i]])
-        prevHand1[i].place(x=cX, y=cY)
-        prevHand1[i].lift()
-        cX += dX
+    if mainGame.goIndex >= 2:
+        mostRecent = mainGame.handsPlayed[mainGame.goIndex-1].hand
+        for i in range(len(mostRecent)):
+            prevHand1[i].config(image=cardImages[mostRecent[i]])
+            prevHand1[i].place(x=cX, y=cY)
+            prevHand1[i].lift()
+            cX += dX
 
 def updateCurrentOption(hand, passing=0):
     #clear it
@@ -273,15 +243,10 @@ def updateScreen():
     #    updateNeuralNetwork(4)
     
 def updateValue():
-    go, state, actions = mainGame.getCurrentState()
-    val = playerNetworks[go].value(state, actions)
-    valueValue.set(str(val[0]))
+    valueValue.set("N/A")
     
 def updateProbNegLog(index):
-    go, state, actions = mainGame.getCurrentState()
-    nlp = playerModels[go].neglogp(state, actions, np.array([index]))
-    prob = np.exp(-nlp)
-    probNegLogValue.set(str(prob[0]))
+    probNegLogValue.set("N/A")
         
     
 def updateOptions():
@@ -320,13 +285,17 @@ def updateOptions():
 def sampleFromNetwork():
     global currSampledOption
     
-    go, state, actions = mainGame.getCurrentState()
-    (a, v, nlp) = playerNetworks[go].step(state, actions)
-    currSampledOption = a[0]
-    if a==enumerateOptions.passInd:
+    available_actions = mainGame.returnAvailableActions()
+    valid_actions = np.flatnonzero(available_actions == 1)
+    if valid_actions.size == 0:
+        currSampledOption = -1
+        sampledOptionValue.set("")
+        return
+    currSampledOption = int(np.random.choice(valid_actions))
+    if currSampledOption == enumerateOptions.passInd:
         sampledOptionValue.set("pass")
     else:
-        ind, nC = enumerateOptions.getOptionNC(a)
+        ind, nC = enumerateOptions.getOptionNC(currSampledOption)
         if nC==1:
             option = ind
         elif nC==2:
@@ -441,26 +410,6 @@ def updateNeuralNetwork(player):
         prevType[i].config(text=str(mainGame.neuralNetworkInputs[player][fInd+i-1]))
     
     
-#update Player Networks            
-def loadNetworks():
-    p1Name = p1Load.get()
-    if p1Name != "":
-        params = joblib.load(p1Name)
-        playerNetworks[1].loadParams(params)
-    p2Name = p2Load.get()
-    if p2Name != "":
-        params = joblib.load(p2Name)
-        playerNetworks[2].loadParams(params)
-    p3Name = p3Load.get()
-    if p3Name != "":
-        params = joblib.load(p3Name)
-        playerNetworks[3].loadParams(params)
-    p4Name = p4Load.get()
-    if p4Name != "":
-        params = joblib.load(p4Name)
-        playerNetworks[4].loadParams(params)
-    updateValue()
-    
 xv = 510
 yv = 60
 xhd = 100
@@ -474,7 +423,7 @@ valueValueLabel.place(x=xv+xhd,y=yv)
 
 ndd = 25
 probNeglogTitle = tkinter.StringVar()
-probNeglogTitle.set("Probability (from neglogp): ")
+probNeglogTitle.set("Option Info:")
 probNeglogLabel = tkinter.Label(top, textvariable=probNeglogTitle, font=("Helvetica",12))
 probNeglogLabel.place(x=xv, y=yv+ndd)
 probNegLogValue = tkinter.StringVar()
@@ -484,7 +433,7 @@ probNegLogValueLabel.place(x=xv+200, y=yv+ndd)
 plyrsGoCircle = tkinter.Canvas(top, height=40,width=40)
 circ = plyrsGoCircle.create_oval(10,10,30,30,fill="red")
 
-sampleButton = tkinter.Button(top, text="Sample Option from Network", command=sampleFromNetwork, height=1, width=27)
+sampleButton = tkinter.Button(top, text="Sample Random Option", command=sampleFromNetwork, height=1, width=27)
 sampleButton.place(x=xv + 50, y=yv+3*ndd-20)
 
 sampledOptionTitle = tkinter.StringVar()
@@ -506,54 +455,6 @@ C1.place(x=165,y=290)
 
 playOptionButton = tkinter.Button(top, text="Play Selected Option", command=playSelectedOption, height=1, width=18)
 playOptionButton.place(x=1050,y=70)
-
-loadButton = tkinter.Button(top, text="Load Networks", command=loadNetworks, height=1, width=12)
-loadButton.place(x=270, y=110)
-
-pNetworksText = tkinter.StringVar()
-pNetworksLabel = tkinter.Label(top, textvariable=pNetworksText, font=("Helvetica",16))
-pNetworksText.set("Load Player Networks")
-pNetworksLabel.place(x=61, y=31)
-
-twidth = 30
-p1Load = tkinter.Entry(top, width=twidth)
-p2Load = tkinter.Entry(top, width=twidth)
-p3Load = tkinter.Entry(top, width=twidth)
-p4Load = tkinter.Entry(top, width=twidth)
-diff = 30
-sypoint = 70
-sxpoint = 69
-p1Load.place(x=sxpoint,y=sypoint)
-sypoint += diff
-p2Load.place(x=sxpoint,y=sypoint)
-sypoint += diff
-p3Load.place(x=sxpoint,y=sypoint)
-sypoint += diff
-p4Load.place(x=sxpoint,y=sypoint)
-
-
-p1smalltext = tkinter.StringVar()
-p1smalltext.set("P1")
-p2smalltext = tkinter.StringVar()
-p2smalltext.set("P2")
-p3smalltext = tkinter.StringVar()
-p3smalltext.set("P3")
-p4smalltext = tkinter.StringVar()
-p4smalltext.set("P4")
-p1smalllabel = tkinter.Label(top, textvariable=p1smalltext, font=("Helvetica",12))
-p2smalllabel = tkinter.Label(top, textvariable=p2smalltext, font=("Helvetica",12))
-p3smalllabel = tkinter.Label(top, textvariable=p3smalltext, font=("Helvetica",12))
-p4smalllabel = tkinter.Label(top, textvariable=p4smalltext, font=("Helvetica",12))
-sypoint = 68
-sxpoint = 40
-p1smalllabel.place(x=sxpoint, y=sypoint)
-sypoint += diff
-p2smalllabel.place(x=sxpoint, y=sypoint)
-sypoint += diff
-p3smalllabel.place(x=sxpoint, y=sypoint)
-sypoint += diff
-p4smalllabel.place(x=sxpoint, y=sypoint)
-
 
 p1text = tkinter.StringVar()
 p2text = tkinter.StringVar()
@@ -590,7 +491,7 @@ listBox.config(yscrollcommand=scrollbar.set)
 listBox.bind('<<ListboxSelect>>',onOptionSelect)
 
 NNWindow = tkinter.Toplevel(top, width=1200,height=450)
-NNWindow.title("Neural Network Input")
+NNWindow.title("Game State Input")
 NNFrame1 = tkinter.Frame(NNWindow)
 NNFrame1.place(x=10,y=40)
 fontsize=6

@@ -1,11 +1,69 @@
-<b><u>RULES</u></b><br/>
-A game starts with 4 players being dealt 13 cards each. The aim of the game is to get rid of all of your cards, at which point you will gain a number of points equal to the sum of the number of cards
-that the other players are left with. Players who do not win will get minus the number of cards they have left. <br/><br/>
-Whoever has the 3 of clubs goes first, and the first play must include the 3 of clubs (any valid hand type that contains it). The next player must play a higher hand of the same type or pass (single cards are ranked firstly by number and then by suit. 3 is the lowest, 2 the highest (3&lt;4&lt;5&lt;6&lt;7&lt;8&lt;9&lt;10&lt;J&lt;Q&lt;K&lt;A&lt;2) and suits are ranked: Clubs &lt; Diamonds &lt; Hearts &lt; Spades, so the 2 of spades is the highest card).
-This continues until everyone passes or someone plays the 2 of spades, at which point that player then has control. When in control, a player may play any valid 1,2,3,4 or 5 card hand. Subsequent players must play a valid hand of the same number of cards which is higher than the previous hand played. 
-This continues until everyone passes, at which point control is gained again and any valid hand may be played. <br/><br/>
-Valid 2 card hands: pairs - ranked primarily by number (so 5 5 &lt; 10 10 regardless of suit), and then by suit (pair with highest suit wins, e.g. 10D 10S beats 10C 10H). Again 2 is highest.<br/>
-Valid 3 card hands: none (three of a kind is not used).<br/>
-Valid 4 card hands: none (two pair is not used).<br/>
-Valid 5 card hands: Straight (5 numbers in a row). Wrap straights are allowed: A 2 3 4 5 is the lowest straight (tie-break by 5 suit), 2 3 4 5 6 is the highest straight (tie-break by 2 suit), and 10 J Q K A is the second highest (tie-break by A suit). Comparison of straights is based on this ordering, then by the highest card's suit within the straight. Full house (3 of one number, 2 of another, e.g. 3D 3S 6S 6H 6C). Comparisons based on higher 3 card section, e.g. 3S 3H 10H 10S 10C beats 2S 2H 4C 4H 4S. Four of a kind is a 5-card hand (four of the same number plus any kicker). Straight flush (both a straight and a flush - follows the same straight ordering and suit tie-break as straights). Straight &lt; Full House &lt; Four of a Kind &lt; Straight Flush<br/>
-Special rules: A single 2 of spades cannot be beaten, so everyone else must pass and the player who played it regains control after the passes. Four of a kind can be played at any time regardless of the current hand, except when the current hand is a straight flush or a single 2 of spades. Straight flush can be played at any time regardless of the current hand, except when the current hand is a single 2 of spades.
+# 大老二（Big 2）遊戲規則
+
+## 基本目標
+- 4 人遊戲，每人發 13 張牌。
+- 先出完手牌者獲勝；勝者得分為其他玩家手上剩餘牌數總和。
+- 未獲勝玩家記分為自己剩餘牌數的負值。
+
+## 出牌順序與控制權
+- 擁有「梅花 3」的玩家先出，且首手必須包含梅花 3（可為任何合法牌型）。
+- 之後依序出牌，需出**同牌型**且**更大**的牌，或選擇過牌。
+- 當所有其他人都過牌，或有人出「黑桃 2」時，該玩家取得控制權。
+- 取得控制權者可自由選擇任意合法的 1/2/3/4/5 張牌型起手。
+- 之後仍需跟出**同牌型**且更大的牌，直到再次全員過牌為止。
+- 單張必須接單張、對子必須接對子、五張必須接同牌型（除特殊規則）。
+
+## 牌點與花色大小
+單張比較：先比點數，再比花色。
+- 點數大小：3 < 4 < 5 < 6 < 7 < 8 < 9 < 10 < J < Q < K < A < 2
+- 花色大小：梅花 < 方塊 < 紅心 < 黑桃
+- 例：黑桃 2 為最大單牌。
+
+## 合法牌型與比較方式
+
+### 1 張牌（單張）
+- 比點數，再比花色。
+
+### 2 張牌（對子）
+- 需為同點數兩張牌。
+- 比點數，再比花色（以該對子中**最高花色**判定）。
+- 例：10♦10♠ > 10♣10♥
+
+### 3 張牌
+- 不使用（三條不算合法牌型）。
+
+### 4 張牌
+- 不使用（兩對不算合法牌型）。
+
+### 5 張牌
+合法牌型：
+- 順子
+- 葫蘆
+- 鐵支
+- 同花順
+
+同一輪中，**五張牌必須跟出同牌型**才可比大小（除特殊規則）。
+
+#### 順子（Straight）
+- 五張連續點數。
+- 允許繞順：A 2 3 4 5 為最小順，2 3 4 5 6 為最大順，10 J Q K A 為次大順。
+- 比較順序依上述排序，再以該順子最高牌的花色決定大小。
+
+#### 葫蘆（Full House）
+- 三張同點數 + 兩張同點數。
+- 比較時只看三張的點數大小。
+- 例：3 3 3 + 10 10 > 2 2 2 + 4 4
+
+#### 鐵支（Four of a Kind）
+- 四張同點數 + 任意一張散牌。
+- 以四張點數大小比較。
+
+#### 同花順（Straight Flush）
+- 同時為順子且同花。
+- 比較方式同順子（先看順序，再看最高牌花色）。
+
+## 特殊規則
+- **黑桃 2 單張**為最強牌，無法被任何牌型（包含鐵支、同花順）超過；所有人必須過牌，出牌者直接取得控制權。
+- **鐵支**可在任何時候直接壓制目前牌型，除非場上已是同花順或黑桃 2 單張。
+- **同花順**可在任何時候直接壓制目前牌型，除非場上已是黑桃 2 單張。
+- 除了鐵支與同花順外，其餘牌型都必須跟出同牌型才可比較。
