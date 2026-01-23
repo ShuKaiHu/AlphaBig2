@@ -6,11 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
-from ml2.belief import BeliefModel
-from ml2.policy_value import PolicyValueModel
-from ml2.features import belief_input_dim
-from ml2.selfplay import run_selfplay_episode
-from ml2.dataset import ReplayBuffer
+from ML_SKHU.belief import BeliefModel
+from ML_SKHU.policy_value import PolicyValueModel
+from ML_SKHU.features import belief_input_dim
+from ML_SKHU.selfplay import run_selfplay_episode
+from ML_SKHU.dataset import ReplayBuffer
 
 
 def train_belief(model, batch, device="cpu"):

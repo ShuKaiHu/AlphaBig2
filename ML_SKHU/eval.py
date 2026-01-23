@@ -4,11 +4,11 @@ import torch
 import enumerateOptions
 import big2Game
 
-from ml2.belief import BeliefModel
-from ml2.policy_value import PolicyValueModel
-from ml2.features import belief_input_dim, encode_belief_input, encode_policy_input, belief_targets
-from ml2.mcts import MCTS
-from ml2.selfplay import make_policy_value_fn
+from ML_SKHU.belief import BeliefModel
+from ML_SKHU.policy_value import PolicyValueModel
+from ML_SKHU.features import belief_input_dim, encode_belief_input, encode_policy_input, belief_targets
+from ML_SKHU.mcts import MCTS
+from ML_SKHU.selfplay import make_policy_value_fn
 
 
 def _random_action(game):

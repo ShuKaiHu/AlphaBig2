@@ -3,8 +3,8 @@ import torch
 import enumerateOptions
 import big2Game
 
-from ml2.features import encode_belief_input, encode_policy_input, belief_targets
-from ml2.mcts import MCTS
+from ML_SKHU.features import encode_belief_input, encode_policy_input, belief_targets
+from ML_SKHU.mcts import MCTS
 
 
 def _apply_action(game, action):
