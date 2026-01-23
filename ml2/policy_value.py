@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class PolicyValueModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, action_dim=1695):
+    def __init__(self, input_dim, hidden_dim=512, action_dim=1695):
         super().__init__()
         self.shared = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),

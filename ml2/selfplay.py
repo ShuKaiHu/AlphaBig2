@@ -24,6 +24,17 @@ def _uniform_belief(game, perspective_player):
     return belief
 
 
+def _min_play_action(game):
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
+    non_pass = valid[valid != enumerateOptions.passInd]
+    if non_pass.size > 0:
+        return int(np.min(non_pass))
+    return enumerateOptions.passInd
+
+
 def make_policy_value_fn(belief_model, policy_value_model, device="cpu"):
     def _fn(game, perspective_player):
         if belief_model is None or policy_value_model is None:
@@ -48,6 +59,8 @@ def run_selfplay_episode(
     n_simulations=50,
     temperature=1.0,
     device="cpu",
+    policy_player=1,
+    opponent_policy="selfplay",
 ):
     game = big2Game.big2Game()
     policy_value_fn = make_policy_value_fn(belief_model, policy_value_model, device=device)
@@ -70,15 +83,19 @@ def run_selfplay_episode(
 
         policy_in = encode_policy_input(game, player, b_probs)
 
-        action, visits = mcts.select_action(game, player, temperature=temperature)
-        if visits.sum() > 0:
-            policy_target = visits / visits.sum()
-        else:
-            policy_target = np.zeros_like(visits)
-            policy_target[action] = 1.0
-
         belief_data.append((belief_in, b_target, b_mask))
-        policy_data.append((policy_in, policy_target, player))
+
+        if opponent_policy == "heuristic" and player != policy_player:
+            action = _min_play_action(game)
+        else:
+            action, visits = mcts.select_action(game, player, temperature=temperature)
+            if visits.sum() > 0:
+                policy_target = visits / visits.sum()
+            else:
+                policy_target = np.zeros_like(visits)
+                policy_target[action] = 1.0
+            if player == policy_player:
+                policy_data.append((policy_in, policy_target, player))
 
         _apply_action(game, action)
 

@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class BeliefModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256):
+    def __init__(self, input_dim, hidden_dim=512):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),

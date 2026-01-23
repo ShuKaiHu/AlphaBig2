@@ -78,6 +78,7 @@ class big2Game:
         self.control = 1
         self.mustPlayClub3 = True
         self.club3Player = whoHas3C
+        self.actionHistory = []
         self.neuralNetworkInputs = {}
         self.neuralNetworkInputs[1] = np.zeros((412,), dtype=int)
         self.neuralNetworkInputs[2] = np.zeros((412,), dtype=int)
@@ -303,6 +304,7 @@ class big2Game:
         if option == -1:
             #they pass
             cPlayer = self.playersGo
+            self.actionHistory.append({"player": cPlayer, "hand": None, "pass": True})
             self.updateNeuralNetworkPass(cPlayer)
             if not self.passedThisRound[cPlayer]:
                 self.passedThisRound[cPlayer] = True
@@ -329,6 +331,7 @@ class big2Game:
             handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseFiveCardIndices[option]]
         for i in handToPlay:
             self.cardsPlayed[self.playersGo-1][i-1] = 1
+        self.actionHistory.append({"player": cPlayer, "hand": handToPlay.copy(), "pass": False})
         self.handsPlayed[self.goIndex] = handPlayed(handToPlay, self.playersGo)
         self.control = 0
         self.goIndex += 1
@@ -369,8 +372,13 @@ class big2Game:
             if i == winner:
                 continue
             self.rewards[i-1] *= loser_multipliers[i]
-
-        self.rewards[winner-1] = -1 * np.sum(self.rewards)
+        # Winner earns the sum of losers' losses.
+        loser_sum = 0.0
+        for i in range(1, 5):
+            if i == winner:
+                continue
+            loser_sum += self.rewards[i - 1]
+        self.rewards[winner-1] = -1 * loser_sum
 
         winner_last_hand = self.handsPlayed[self.goIndex - 1].hand
         winner_multiplier = self._hand_multiplier(winner_last_hand, count_hand_size=False)

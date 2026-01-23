@@ -29,15 +29,21 @@ def _apply_action(game, action):
 
 def _load_model(model, path):
     if not path:
-        return False
-    state = torch.load(path, map_location="cpu")
-    model.load_state_dict(state)
-    return True
+        return model, False
+    try:
+        state = torch.load(path, map_location="cpu")
+        if isinstance(state, dict):
+            model.load_state_dict(state)
+            return model, True
+    except Exception:
+        pass
+    scripted = torch.jit.load(path, map_location="cpu")
+    return scripted, True
 
 
-def _belief_accuracy(belief_model, game, player, device="cpu"):
+def _belief_accuracy(belief_model, game, player, device="cpu", margin=0.1):
     if belief_model is None:
-        return None
+        return None, None
     belief_in = encode_belief_input(game, player)
     targets, mask = belief_targets(game, player)
     with torch.no_grad():
@@ -47,9 +53,15 @@ def _belief_accuracy(belief_model, game, player, device="cpu"):
     preds = np.argmax(probs, axis=-1)
     valid = mask > 0
     if valid.sum() == 0:
-        return None
-    acc = (preds[valid] == targets[valid]).mean()
-    return float(acc)
+        return None, None
+    top2 = np.partition(probs, -2, axis=-1)[:, -2:]
+    confidence = top2[:, 1] - top2[:, 0]
+    known_mask = valid & (confidence >= margin)
+    if known_mask.sum() == 0:
+        return None, 0.0
+    acc = (preds[known_mask] == targets[known_mask]).mean()
+    coverage = float(known_mask.sum() / valid.sum())
+    return float(acc), coverage
 
 
 def play_game(belief_model, policy_value_model, n_simulations, device="cpu"):
@@ -57,6 +69,7 @@ def play_game(belief_model, policy_value_model, n_simulations, device="cpu"):
     policy_value_fn = make_policy_value_fn(belief_model, policy_value_model, device=device)
     mcts = MCTS(policy_value_fn, n_simulations=n_simulations)
     belief_accs = []
+    belief_coverages = []
 
     while not game.gameOver:
         player = game.playersGo
@@ -64,14 +77,16 @@ def play_game(belief_model, policy_value_model, n_simulations, device="cpu"):
             action, _ = mcts.select_action(game, player, temperature=0.0)
         else:
             action = _random_action(game)
-        acc = _belief_accuracy(belief_model, game, player, device=device)
+        acc, coverage = _belief_accuracy(belief_model, game, player, device=device)
         if acc is not None:
             belief_accs.append(acc)
+        if coverage is not None:
+            belief_coverages.append(coverage)
         _apply_action(game, action)
 
-    reward = float(game.rewards[0])
-    win = reward > 0
-    return win, reward, belief_accs
+    rewards = [float(r) for r in game.rewards]
+    wins = [1 if r > 0 else 0 for r in rewards]
+    return wins, rewards, belief_accs, belief_coverages
 
 
 def main():
@@ -89,31 +104,37 @@ def main():
     belief_model = BeliefModel(b_input_dim).to(args.device)
     policy_value_model = PolicyValueModel(p_input_dim).to(args.device)
 
-    loaded_belief = _load_model(belief_model, args.belief_ckpt)
-    loaded_policy = _load_model(policy_value_model, args.policy_ckpt)
+    belief_model, loaded_belief = _load_model(belief_model, args.belief_ckpt)
+    policy_value_model, loaded_policy = _load_model(policy_value_model, args.policy_ckpt)
     if not (loaded_belief or loaded_policy):
         print("warning: no checkpoints provided; models are randomly initialized.")
 
-    wins = 0
-    rewards = []
+    wins = [0, 0, 0, 0]
+    rewards = [[], [], [], []]
     belief_accs = []
+    belief_coverages = []
     for _ in range(args.games):
-        win, reward, accs = play_game(
+        win, reward, accs, coverages = play_game(
             belief_model, policy_value_model, args.simulations, device=args.device
         )
-        wins += int(win)
-        rewards.append(reward)
+        for i in range(4):
+            wins[i] += int(win[i])
+            rewards[i].append(reward[i])
         belief_accs.extend(accs)
+        belief_coverages.extend(coverages)
 
-    win_rate = wins / args.games
-    avg_reward = float(np.mean(rewards)) if rewards else 0.0
+    win_rates = [w / args.games for w in wins]
+    avg_rewards = [float(np.mean(r)) if r else 0.0 for r in rewards]
     avg_belief = float(np.mean(belief_accs)) if belief_accs else None
+    avg_coverage = float(np.mean(belief_coverages)) if belief_coverages else None
 
     print(f"games: {args.games}")
-    print(f"win_rate (player1 vs random): {win_rate:.2f}")
-    print(f"avg_reward (player1): {avg_reward:.2f}")
+    for i in range(4):
+        print(f"player{i+1} win_rate: {win_rates[i]:.2f} avg_reward: {avg_rewards[i]:.2f}")
     if avg_belief is not None:
-        print(f"belief_top1_acc (avg): {avg_belief:.3f}")
+        print(f"belief_top1_acc_known (avg): {avg_belief:.3f}")
+    if avg_coverage is not None:
+        print(f"belief_known_coverage (avg): {avg_coverage:.3f}")
 
 
 if __name__ == "__main__":
