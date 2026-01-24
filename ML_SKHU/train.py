@@ -69,7 +69,7 @@ def main():
         if os.path.exists(p_path):
             policy_value_model.load_state_dict(torch.load(p_path, map_location=device))
 
-    buffer = ReplayBuffer(capacity=20000)
+    buffer = ReplayBuffer(capacity=50000)
     b_optim = optim.Adam(belief_model.parameters(), lr=1e-3)
     p_optim = optim.Adam(policy_value_model.parameters(), lr=1e-3)
 
