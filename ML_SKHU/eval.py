@@ -18,6 +18,16 @@ def _random_action(game):
         return enumerateOptions.passInd
     return int(np.random.choice(valid))
 
+def _heuristic_action(game):
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
+    non_pass = valid[valid != enumerateOptions.passInd]
+    if non_pass.size > 0:
+        return int(np.min(non_pass))
+    return enumerateOptions.passInd
+
 
 def _apply_action(game, action):
     if action == enumerateOptions.passInd:
@@ -64,7 +74,7 @@ def _belief_accuracy(belief_model, game, player, device="cpu", margin=0.1):
     return float(acc), coverage
 
 
-def play_game(belief_model, policy_value_model, n_simulations, device="cpu"):
+def play_game(belief_model, policy_value_model, n_simulations, opponent_policy, device="cpu"):
     game = big2Game.big2Game()
     policy_value_fn = make_policy_value_fn(belief_model, policy_value_model, device=device)
     mcts = MCTS(policy_value_fn, n_simulations=n_simulations)
@@ -76,7 +86,10 @@ def play_game(belief_model, policy_value_model, n_simulations, device="cpu"):
         if player == 1:
             action, _ = mcts.select_action(game, player, temperature=0.0)
         else:
-            action = _random_action(game)
+            if opponent_policy == "heuristic":
+                action = _heuristic_action(game)
+            else:
+                action = _random_action(game)
         acc, coverage = _belief_accuracy(belief_model, game, player, device=device)
         if acc is not None:
             belief_accs.append(acc)
@@ -96,6 +109,7 @@ def main():
     parser.add_argument("--belief-ckpt", type=str, default="")
     parser.add_argument("--policy-ckpt", type=str, default="")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--opponent", type=str, default="random", choices=["random", "heuristic"])
     args = parser.parse_args()
 
     b_input_dim = belief_input_dim()
@@ -115,7 +129,7 @@ def main():
     belief_coverages = []
     for _ in range(args.games):
         win, reward, accs, coverages = play_game(
-            belief_model, policy_value_model, args.simulations, device=args.device
+            belief_model, policy_value_model, args.simulations, args.opponent, device=args.device
         )
         for i in range(4):
             wins[i] += int(win[i])

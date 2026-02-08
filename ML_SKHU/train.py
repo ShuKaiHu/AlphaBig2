@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--max-hours", type=float, default=0.0)
     parser.add_argument("--assume-yes", action="store_true")
     parser.add_argument("--opponent", type=str, default="selfplay", choices=["selfplay", "heuristic"])
+    parser.add_argument("--policy-weight", type=float, default=1.0)
+    parser.add_argument("--updates-per-episode", type=int, default=1)
     args = parser.parse_args()
 
     device = args.device
@@ -102,22 +104,28 @@ def main():
             buffer.add_policy(*item)
 
         b_loss = None
-        if len(buffer.belief) > 0:
-            batch = buffer.sample_belief(args.batch_size)
-            loss = train_belief(belief_model, batch, device=device)
-            b_optim.zero_grad()
-            loss.backward()
-            b_optim.step()
-            b_loss = float(loss.item())
-
         p_loss = None
-        if len(buffer.policy) > 0:
-            batch = buffer.sample_policy(args.batch_size)
-            loss = train_policy_value(policy_value_model, batch, device=device)
-            p_optim.zero_grad()
-            loss.backward()
-            p_optim.step()
-            p_loss = float(loss.item())
+        for _ in range(max(1, args.updates_per_episode)):
+            if len(buffer.belief) > 0:
+                batch = buffer.sample_belief(args.batch_size)
+                loss = train_belief(belief_model, batch, device=device)
+                b_optim.zero_grad()
+                loss.backward()
+                b_optim.step()
+                b_loss = float(loss.item())
+
+            if len(buffer.policy) > 0:
+                batch = buffer.sample_policy(args.batch_size)
+                loss = train_policy_value(
+                    policy_value_model,
+                    batch,
+                    device=device,
+                    policy_weight=args.policy_weight,
+                )
+                p_optim.zero_grad()
+                loss.backward()
+                p_optim.step()
+                p_loss = float(loss.item())
 
         if episode == 1 or episode % 5 == 0:
             msg = (
