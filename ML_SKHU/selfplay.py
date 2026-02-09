@@ -35,6 +35,14 @@ def _min_play_action(game):
     return enumerateOptions.passInd
 
 
+def _random_action(game):
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
+    return int(np.random.choice(valid))
+
+
 def make_policy_value_fn(belief_model, policy_value_model, device="cpu"):
     def _fn(game, perspective_player):
         if belief_model is None or policy_value_model is None:
@@ -85,8 +93,13 @@ def run_selfplay_episode(
 
         belief_data.append((belief_in, b_target, b_mask))
 
-        if opponent_policy == "heuristic" and player != policy_player:
-            action = _min_play_action(game)
+        if player != policy_player:
+            if opponent_policy == "heuristic":
+                action = _min_play_action(game)
+            elif opponent_policy == "random":
+                action = _random_action(game)
+            else:
+                action, visits = mcts.select_action(game, player, temperature=temperature)
         else:
             action, visits = mcts.select_action(game, player, temperature=temperature)
             if visits.sum() > 0:

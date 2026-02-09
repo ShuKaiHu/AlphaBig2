@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-hours", type=float, default=0.0)
     parser.add_argument("--assume-yes", action="store_true")
-    parser.add_argument("--opponent", type=str, default="selfplay", choices=["selfplay", "heuristic"])
+    parser.add_argument("--opponent", type=str, default="random", choices=["selfplay", "heuristic", "random"])
     parser.add_argument("--policy-weight", type=float, default=1.0)
     parser.add_argument("--updates-per-episode", type=int, default=1)
     args = parser.parse_args()
@@ -62,10 +62,11 @@ def main():
     belief_model = BeliefModel(b_input_dim).to(device)
     policy_value_model = PolicyValueModel(p_input_dim).to(device)
 
-    os.makedirs("ml2/models", exist_ok=True)
+    model_dir = f"ML_SKHU/models/{args.opponent}"
+    os.makedirs(model_dir, exist_ok=True)
     if args.resume:
-        b_path = "ml2/models/belief.pt"
-        p_path = "ml2/models/policy_value.pt"
+        b_path = f"{model_dir}/belief.pt"
+        p_path = f"{model_dir}/policy_value.pt"
         if os.path.exists(b_path):
             belief_model.load_state_dict(torch.load(b_path, map_location=device))
         if os.path.exists(p_path):
@@ -137,8 +138,8 @@ def main():
             )
             print(msg)
 
-    torch.save(belief_model.state_dict(), "ml2/models/belief.pt")
-    torch.save(policy_value_model.state_dict(), "ml2/models/policy_value.pt")
+    torch.save(belief_model.state_dict(), f"{model_dir}/belief.pt")
+    torch.save(policy_value_model.state_dict(), f"{model_dir}/policy_value.pt")
 
 
 if __name__ == "__main__":
