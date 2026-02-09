@@ -108,7 +108,7 @@ def _hand_action_vector(hand, player, passed):
 def _history_features(game, history_len=HISTORY_LEN):
     vectors = []
     if hasattr(game, "actionHistory") and game.actionHistory:
-        history = list(reversed(game.actionHistory))
+        history = list(game.actionHistory)
     else:
         history = []
     for i in range(history_len):
