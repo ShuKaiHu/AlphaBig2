@@ -10,10 +10,10 @@ class BeliefModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 52 * 3),
+            nn.Linear(hidden_dim, 52 * 4),
         )
 
     def forward(self, x):
         # x: [batch, input_dim]
         logits = self.net(x)
-        return logits.view(-1, 52, 3)
+        return logits.view(-1, 52, 4)

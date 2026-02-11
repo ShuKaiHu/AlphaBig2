@@ -113,7 +113,7 @@ def main():
     args = parser.parse_args()
 
     b_input_dim = belief_input_dim()
-    p_input_dim = b_input_dim + 52 * 3 + 52  # base + belief (52*3) + unknown_mask (52)
+    p_input_dim = b_input_dim + 52 * 4 + 52  # base + belief (52*4) + unknown_mask (52)
 
     belief_model = BeliefModel(b_input_dim).to(args.device)
     policy_value_model = PolicyValueModel(p_input_dim).to(args.device)

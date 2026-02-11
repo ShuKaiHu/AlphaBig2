@@ -193,11 +193,9 @@ def belief_targets(game, perspective_player):
 def encode_policy_input(game, perspective_player, belief_probs):
     base = encode_belief_input(game, perspective_player)
     belief_flat = belief_probs.reshape(-1).astype(np.float32)
-    
-    # Add unknown mask: 1 where card is unknown, 0 where it's known (played or in my hand)
-    # This allows policy to learn when belief is reliable
+
     played = _played_mask(game)
     my_hand = _card_mask(game.currentHands[perspective_player])
     unknown_mask = 1.0 - np.clip(played + my_hand, 0, 1)
-    
+
     return np.concatenate([base, belief_flat, unknown_mask], axis=0)

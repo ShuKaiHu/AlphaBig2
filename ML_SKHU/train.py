@@ -21,7 +21,7 @@ def train_belief(model, batch, device="cpu"):
     masks = torch.tensor(np.array(masks), dtype=torch.float32, device=device)
     logits = model(x)
     loss = nn.functional.cross_entropy(
-        logits.view(-1, 3),
+        logits.view(-1, 4),
         targets.view(-1),
         reduction="none",
         ignore_index=-1,
@@ -58,7 +58,7 @@ def main():
 
     device = args.device
     b_input_dim = belief_input_dim()
-    p_input_dim = b_input_dim + 52 * 3 + 52  # base + belief (52*3) + unknown_mask (52)
+    p_input_dim = b_input_dim + 52 * 4 + 52  # base + belief (52*4) + unknown_mask (52)
     belief_model = BeliefModel(b_input_dim).to(device)
     policy_value_model = PolicyValueModel(p_input_dim).to(device)
 
