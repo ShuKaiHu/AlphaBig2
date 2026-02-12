@@ -108,7 +108,8 @@ def run_selfplay_episode(
                 policy_target = np.zeros_like(visits)
                 policy_target[action] = 1.0
             if player == policy_player:
-                policy_data.append((policy_in, policy_target, player))
+        action_mask = np.isfinite(big2Game.convertAvailableActions(game.returnAvailableActions().astype(np.float32))).astype(np.float32)
+        policy_data.append((policy_in, policy_target, player, action_mask))
 
         _apply_action(game, action)
 

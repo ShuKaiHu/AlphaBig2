@@ -8,3 +8,4 @@ ml/*.npz
 ml/*.pt
 ml2/models/*.pt
 ml2/models/*.pt.bak
+ML_SKHU/models/

@@ -32,11 +32,12 @@ def train_belief(model, batch, device="cpu"):
 
 def train_policy_value(model, batch, device="cpu", policy_weight=3.0):
     model.train()
-    x, policy_targets, value_targets = zip(*batch)
+    x, policy_targets, value_targets, action_masks = zip(*batch)
     x = torch.tensor(np.array(x), dtype=torch.float32, device=device)
     policy_targets = torch.tensor(np.array(policy_targets), dtype=torch.float32, device=device)
     value_targets = torch.tensor(np.array(value_targets), dtype=torch.float32, device=device).unsqueeze(1)
-    policy_logits, values = model(x)
+    action_masks = torch.tensor(np.array(action_masks), dtype=torch.float32, device=device)
+    policy_logits, values = model(x, action_masks)
     policy_loss = -(policy_targets * nn.functional.log_softmax(policy_logits, dim=-1)).sum(dim=-1).mean()
     value_loss = nn.functional.mse_loss(values, value_targets)
     return policy_weight * policy_loss + value_loss
