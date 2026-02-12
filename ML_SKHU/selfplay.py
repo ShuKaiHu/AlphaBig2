@@ -93,13 +93,13 @@ def run_selfplay_episode(
 
         belief_data.append((belief_in, b_target, b_mask))
 
+        action_mask = np.isfinite(big2Game.convertAvailableActions(game.returnAvailableActions().astype(np.float32))).astype(np.float32)
+
         if player != policy_player:
             if opponent_policy == "heuristic":
                 action = _min_play_action(game)
-            elif opponent_policy == "random":
-                action = _random_action(game)
             else:
-                action, visits = mcts.select_action(game, player, temperature=temperature)
+                action = _random_action(game)
         else:
             action, visits = mcts.select_action(game, player, temperature=temperature)
             if visits.sum() > 0:
@@ -107,9 +107,7 @@ def run_selfplay_episode(
             else:
                 policy_target = np.zeros_like(visits)
                 policy_target[action] = 1.0
-            if player == policy_player:
-        action_mask = np.isfinite(big2Game.convertAvailableActions(game.returnAvailableActions().astype(np.float32))).astype(np.float32)
-        policy_data.append((policy_in, policy_target, player, action_mask))
+            policy_data.append((policy_in, policy_target, player, action_mask))
 
         _apply_action(game, action)
 

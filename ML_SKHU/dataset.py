@@ -19,8 +19,7 @@ class ReplayBuffer:
 
     def sample_policy(self, batch_size):
         samples = random.sample(self.policy, min(batch_size, len(self.policy)))
-        xs, ys, vs, masks = zip(*samples)
-        return list(zip(xs, ys, vs, masks))
+        return samples
 
     def __len__(self):
         return len(self.belief), len(self.policy)
