@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--save", required=True)
+    parser.add_argument("--value-weight", type=float, default=1.0)
+    parser.add_argument("--reinforce", action="store_true")
     args = parser.parse_args()
 
     data = np.load(args.data)
@@ -25,7 +27,7 @@ def main():
 
     p_input_dim = obs.shape[1]
     model = PolicyValueModel(p_input_dim, hidden_dim=256).to(args.device)
-    optimzer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(args.epochs):
         idx = torch.randperm(obs.size(0))
@@ -39,13 +41,20 @@ def main():
 
             logits, values = model(batch_x, batch_mask)
             log_probs = nn.functional.log_softmax(logits, dim=-1)
-            action_loss = -log_probs[torch.arange(log_probs.size(0)), batch_actions].mean()
+            selected_log_probs = log_probs[torch.arange(log_probs.size(0)), batch_actions]
+            action_loss = -selected_log_probs.mean()
             value_loss = nn.functional.mse_loss(values, batch_rewards)
-            loss = action_loss + value_loss
+            loss = action_loss + args.value_weight * value_loss
+            if args.reinforce:
+                with torch.no_grad():
+                    baseline = values.detach().squeeze(-1)
+                advantage = (batch_rewards - baseline).detach()
+                reinforce_loss = -(advantage * selected_log_probs).mean()
+                loss = loss + reinforce_loss
 
-            optimzer.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
-            optimzer.step()
+            optimizer.step()
             total_loss += loss.item() * batch_x.size(0)
 
         avg_loss = total_loss / obs.size(0)

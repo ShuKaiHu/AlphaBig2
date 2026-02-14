@@ -9,3 +9,5 @@ ml/*.pt
 ml2/models/*.pt
 ml2/models/*.pt.bak
 ML_SKHU/models/
+policy_data.npz
+policy_only.pt
