@@ -40,7 +40,7 @@ def main():
             logits, values = model(batch_x, batch_mask)
             log_probs = nn.functional.log_softmax(logits, dim=-1)
             action_loss = -log_probs[torch.arange(log_probs.size(0)), batch_actions].mean()
-            value_loss = nn.functional.mse_loss(values, batch_rewards.unsqueeze(1))
+            value_loss = nn.functional.mse_loss(values, batch_rewards)
             loss = action_loss + value_loss
 
             optimzer.zero_grad()
