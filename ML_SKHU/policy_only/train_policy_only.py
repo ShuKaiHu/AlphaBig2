@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--save", required=True)
     parser.add_argument("--value-weight", type=float, default=1.0)
-    parser.add_argument("--reinforce", action="store_true")
+    parser.add_argument("--action-weight", type=float, default=0.0)
     args = parser.parse_args()
 
     data = np.load(args.data)
@@ -32,6 +32,8 @@ def main():
     for epoch in range(args.epochs):
         idx = torch.randperm(obs.size(0))
         total_loss = 0.0
+        total_action_loss = 0.0
+        total_value_loss = 0.0
         for i in range(0, obs.size(0), args.batch_size):
             batch_idx = idx[i : i + args.batch_size]
             batch_x = obs[batch_idx]
@@ -43,23 +45,25 @@ def main():
             log_probs = nn.functional.log_softmax(logits, dim=-1)
             selected_log_probs = log_probs[torch.arange(log_probs.size(0)), batch_actions]
             action_loss = -selected_log_probs.mean()
-            value_loss = nn.functional.mse_loss(values, batch_rewards)
-            loss = action_loss + args.value_weight * value_loss
-            if args.reinforce:
-                with torch.no_grad():
-                    baseline = values.detach().squeeze(-1)
-                advantage = (batch_rewards - baseline).detach()
-                reinforce_loss = -(advantage * selected_log_probs).mean()
-                loss = loss + reinforce_loss
+            value_loss = nn.functional.mse_loss(values.squeeze(-1), batch_rewards)
+            loss = args.action_weight * action_loss + args.value_weight * value_loss
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * batch_x.size(0)
+            total_action_loss += action_loss.item() * batch_x.size(0)
+            total_value_loss += value_loss.item() * batch_x.size(0)
 
         avg_loss = total_loss / obs.size(0)
-        if epoch % 5 == 0:
-            print(f"epoch={epoch} loss={avg_loss:.4f}")
+        avg_action_loss = total_action_loss / obs.size(0)
+        avg_value_loss = total_value_loss / obs.size(0)
+        if epoch % 5 == 0 or epoch == args.epochs - 1:
+            print(
+                f"epoch={epoch} loss={avg_loss:.4f} "
+                f"action={avg_action_loss:.4f} "
+                f"value={avg_value_loss:.4f}"
+            )
 
     torch.save(model.state_dict(), args.save)
     print(f"saved {args.save}")

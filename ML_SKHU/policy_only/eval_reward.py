@@ -1,0 +1,68 @@
+import argparse
+import numpy as np
+import torch
+
+import big2Game
+import enumerateOptions
+
+from ML_SKHU.policy_value import PolicyValueModel
+from ML_SKHU.features import encode_belief_input
+
+
+def heuristic_action(game):
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
+    non_pass = valid[valid != enumerateOptions.passInd]
+    return int(np.min(non_pass)) if non_pass.size > 0 else enumerateOptions.passInd
+
+
+def play_game(model, device="cpu"):
+    model.eval()
+    game = big2Game.big2Game()
+    while not game.gameOver:
+        player = game.playersGo
+        belief_in = encode_belief_input(game, player)
+        mask = torch.tensor(
+            np.isfinite(
+                big2Game.convertAvailableActions(
+                    game.returnAvailableActions().astype(np.float32)
+                )
+            ).astype(np.float32)
+        ).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits, _ = model(
+                torch.from_numpy(belief_in).float().unsqueeze(0).to(device), mask
+            )
+        action = int(torch.argmax(logits, dim=-1).item())
+        if action == enumerateOptions.passInd:
+            game.updateGame(-1)
+        else:
+            opt, n = enumerateOptions.getOptionNC(action)
+            game.updateGame(opt, n)
+
+    return float(game.rewards[0])
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--policy-ckpt", required=True)
+    parser.add_argument("--games", type=int, default=50)
+    parser.add_argument("--device", default="cpu")
+    args = parser.parse_args()
+
+    sample_input = encode_belief_input(big2Game.big2Game(), 1)
+    model = PolicyValueModel(sample_input.shape[0], hidden_dim=256).to(args.device)
+    model.load_state_dict(torch.load(args.policy_ckpt, map_location=args.device))
+
+    rewards = []
+    for _ in range(args.games):
+        rewards.append(play_game(model, device=args.device))
+
+    avg_reward = np.mean(rewards)
+    print(f"{avg_reward:.6f}")
+
+
+if __name__ == "__main__":
+    main()
