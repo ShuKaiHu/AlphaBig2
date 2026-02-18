@@ -159,6 +159,161 @@ def encode_belief_input(game, perspective_player):
     return np.concatenate(features, axis=0).astype(np.float32)
 
 
+def encode_full_info_input(game, perspective_player):
+    hands = []
+    for i in range(1, 5):
+        if i == perspective_player:
+            hands.append(_card_mask(game.currentHands[i]))
+        else:
+            hands.append(np.zeros((NUM_CARDS,), dtype=np.float32))
+    all_hands = np.concatenate(hands, axis=0)
+    played = _played_mask(game)
+    remaining = np.array(
+        [len(game.currentHands[i]) for i in range(1, 5)],
+        dtype=np.float32,
+    ) / 13.0
+    current_player = _one_hot(game.playersGo - 1, NUM_PLAYERS)
+    control = np.array([1.0 if game.control else 0.0], dtype=np.float32)
+    must_play_club3 = np.array([1.0 if game.mustPlayClub3 else 0.0], dtype=np.float32)
+    passed = np.array(
+        [1.0 if game.passedThisRound[i] else 0.0 for i in range(1, 5)],
+        dtype=np.float32,
+    )
+    last_player = _one_hot(game.lastPlayedPlayer - 1, NUM_PLAYERS)
+
+    history = _history_features(game)
+    prev_type, prev_rank, prev_suit, prev_straight = _hand_features(
+        game.handsPlayed[game.goIndex - 1].hand if game.goIndex - 1 in game.handsPlayed else None
+    )
+    unknown_mask = np.zeros((52,), dtype=np.float32)
+    for i in range(1, 5):
+        if i == perspective_player:
+            continue
+        for cid in game.currentHands[i]:
+            unknown_mask[int(cid) - 1] = 1.0
+
+    features = [
+        all_hands,
+        played,
+        remaining,
+        current_player,
+        control,
+        must_play_club3,
+        passed,
+        last_player,
+        history,
+        prev_type,
+        prev_rank,
+        prev_suit,
+        prev_straight,
+        unknown_mask,
+    ]
+    return np.concatenate(features, axis=0).astype(np.float32)
+
+
+def encode_full_info_input_known(game, perspective_player):
+    hands = []
+    for i in range(1, 5):
+        hands.append(_card_mask(game.currentHands[i]))
+    all_hands = np.concatenate(hands, axis=0)
+    played = _played_mask(game)
+    remaining = np.array(
+        [len(game.currentHands[i]) for i in range(1, 5)],
+        dtype=np.float32,
+    ) / 13.0
+    current_player = _one_hot(game.playersGo - 1, NUM_PLAYERS)
+    control = np.array([1.0 if game.control else 0.0], dtype=np.float32)
+    must_play_club3 = np.array([1.0 if game.mustPlayClub3 else 0.0], dtype=np.float32)
+    passed = np.array(
+        [1.0 if game.passedThisRound[i] else 0.0 for i in range(1, 5)],
+        dtype=np.float32,
+    )
+    last_player = _one_hot(game.lastPlayedPlayer - 1, NUM_PLAYERS)
+
+    history = _history_features(game)
+    prev_type, prev_rank, prev_suit, prev_straight = _hand_features(
+        game.handsPlayed[game.goIndex - 1].hand if game.goIndex - 1 in game.handsPlayed else None
+    )
+    unknown_mask = np.zeros((52,), dtype=np.float32)
+
+    features = [
+        all_hands,
+        played,
+        remaining,
+        current_player,
+        control,
+        must_play_club3,
+        passed,
+        last_player,
+        history,
+        prev_type,
+        prev_rank,
+        prev_suit,
+        prev_straight,
+        unknown_mask,
+    ]
+    return np.concatenate(features, axis=0).astype(np.float32)
+
+
+def encode_full_info_with_belief(game, perspective_player, belief_probs):
+    my_hand = _card_mask(game.currentHands[perspective_player])
+    played = _played_mask(game)
+    unknown_mask = 1.0 - np.clip(played + my_hand, 0, 1)
+
+    # belief_probs: [52,4] (p2, p3, p4, unknown)
+    p2 = belief_probs[:, 0] * unknown_mask
+    p3 = belief_probs[:, 1] * unknown_mask
+    p4 = belief_probs[:, 2] * unknown_mask
+
+    hands = []
+    for i in range(1, 5):
+        if i == perspective_player:
+            hands.append(my_hand)
+        elif i == 2:
+            hands.append(p2.astype(np.float32))
+        elif i == 3:
+            hands.append(p3.astype(np.float32))
+        else:
+            hands.append(p4.astype(np.float32))
+    all_hands = np.concatenate(hands, axis=0)
+
+    remaining = np.array(
+        [len(game.currentHands[i]) for i in range(1, 5)],
+        dtype=np.float32,
+    ) / 13.0
+    current_player = _one_hot(game.playersGo - 1, NUM_PLAYERS)
+    control = np.array([1.0 if game.control else 0.0], dtype=np.float32)
+    must_play_club3 = np.array([1.0 if game.mustPlayClub3 else 0.0], dtype=np.float32)
+    passed = np.array(
+        [1.0 if game.passedThisRound[i] else 0.0 for i in range(1, 5)],
+        dtype=np.float32,
+    )
+    last_player = _one_hot(game.lastPlayedPlayer - 1, NUM_PLAYERS)
+
+    history = _history_features(game)
+    prev_type, prev_rank, prev_suit, prev_straight = _hand_features(
+        game.handsPlayed[game.goIndex - 1].hand if game.goIndex - 1 in game.handsPlayed else None
+    )
+
+    features = [
+        all_hands,
+        played,
+        remaining,
+        current_player,
+        control,
+        must_play_club3,
+        passed,
+        last_player,
+        history,
+        prev_type,
+        prev_rank,
+        prev_suit,
+        prev_straight,
+        unknown_mask.astype(np.float32),
+    ]
+    return np.concatenate(features, axis=0).astype(np.float32)
+
+
 def belief_input_dim():
     dummy = np.zeros((1,), dtype=np.int64)
     class _DummyGame:

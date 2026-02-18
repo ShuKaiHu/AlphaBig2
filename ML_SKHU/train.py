@@ -5,11 +5,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import big2Game
 
 from ML_SKHU.belief import BeliefModel
 from ML_SKHU.policy_value import PolicyValueModel
-from ML_SKHU.features import belief_input_dim
+from ML_SKHU.features import belief_input_dim, encode_full_info_with_belief
 from ML_SKHU.selfplay import run_selfplay_episode
+from ML_SKHU.eval import play_game as eval_play_game
 from ML_SKHU.dataset import ReplayBuffer
 
 
@@ -35,11 +37,11 @@ def train_policy_value(model, batch, device="cpu", policy_weight=3.0):
     x, policy_targets, value_targets, action_masks = zip(*batch)
     x = torch.tensor(np.array(x), dtype=torch.float32, device=device)
     policy_targets = torch.tensor(np.array(policy_targets), dtype=torch.float32, device=device)
-    value_targets = torch.tensor(np.array(value_targets), dtype=torch.float32, device=device).unsqueeze(1)
+    value_targets = torch.tensor(np.array(value_targets), dtype=torch.float32, device=device)
     action_masks = torch.tensor(np.array(action_masks), dtype=torch.float32, device=device)
     policy_logits, values = model(x, action_masks)
     policy_loss = -(policy_targets * nn.functional.log_softmax(policy_logits, dim=-1)).sum(dim=-1).mean()
-    value_loss = nn.functional.mse_loss(values, value_targets)
+    value_loss = nn.functional.mse_loss(values.view(-1), value_targets.view(-1))
     return policy_weight * policy_loss + value_loss
 
 
@@ -59,7 +61,9 @@ def main():
 
     device = args.device
     b_input_dim = belief_input_dim()
-    p_input_dim = b_input_dim + 52 * 4 + 52  # base + belief (52*4) + unknown_mask (52)
+    dummy = big2Game.big2Game()
+    dummy_belief = np.zeros((52, 4), dtype=np.float32)
+    p_input_dim = int(encode_full_info_with_belief(dummy, 1, dummy_belief).shape[0])
     belief_model = BeliefModel(b_input_dim).to(device)
     policy_value_model = PolicyValueModel(p_input_dim).to(device)
 
@@ -130,11 +134,36 @@ def main():
                 p_loss = float(loss.item())
 
         if episode == 1 or episode % 5 == 0:
+            b_disp = f"{b_loss:.2f}" if b_loss is not None else "n/a"
+            p_disp = f"{p_loss:.2f}" if p_loss is not None else "n/a"
+
+            eval_rewards = []
+            belief_accs = []
+            belief_covs = []
+            for _ in range(10):
+                wins, rewards, accs, covs = eval_play_game(
+                    belief_model,
+                    policy_value_model,
+                    args.simulations,
+                    args.opponent,
+                    device=device,
+                )
+                eval_rewards.append(rewards[0])
+                belief_accs.extend(accs)
+                belief_covs.extend(covs)
+
+            avg_eval_reward = float(np.mean(eval_rewards)) if eval_rewards else 0.0
+            avg_belief = float(np.mean(belief_accs)) if belief_accs else 0.0
+            avg_cov = float(np.mean(belief_covs)) if belief_covs else 0.0
+
             msg = (
                 f"episode={episode}/{args.episodes} "
                 f"selfplay={selfplay_time:.1f}s "
-                f"belief_loss={b_loss if b_loss is not None else 'n/a'} "
-                f"policy_loss={p_loss if p_loss is not None else 'n/a'} "
+                f"belief_loss={b_disp} "
+                f"policy_loss={p_disp} "
+                f"eval_reward={avg_eval_reward:.2f} "
+                f"belief_acc={avg_belief:.2f} "
+                f"belief_cov={avg_cov:.2f} "
                 f"buffer(belief,policy)={len(buffer.belief)},{len(buffer.policy)}"
             )
             print(msg)

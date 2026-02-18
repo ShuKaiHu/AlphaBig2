@@ -6,7 +6,7 @@ import big2Game
 
 from ML_SKHU.belief import BeliefModel
 from ML_SKHU.policy_value import PolicyValueModel
-from ML_SKHU.features import belief_input_dim, encode_belief_input, encode_policy_input, belief_targets
+from ML_SKHU.features import belief_input_dim, encode_belief_input, encode_full_info_with_belief, belief_targets
 from ML_SKHU.mcts import MCTS
 from ML_SKHU.selfplay import make_policy_value_fn
 
@@ -46,7 +46,7 @@ def _load_model(model, path):
             model.load_state_dict(state)
             return model, True
     except Exception:
-        pass
+        raise
     scripted = torch.jit.load(path, map_location="cpu")
     return scripted, True
 
@@ -113,7 +113,9 @@ def main():
     args = parser.parse_args()
 
     b_input_dim = belief_input_dim()
-    p_input_dim = b_input_dim + 52 * 4 + 52  # base + belief (52*4) + unknown_mask (52)
+    dummy = big2Game.big2Game()
+    dummy_belief = np.zeros((52, 4), dtype=np.float32)
+    p_input_dim = int(encode_full_info_with_belief(dummy, 1, dummy_belief).shape[0])
 
     belief_model = BeliefModel(b_input_dim).to(args.device)
     policy_value_model = PolicyValueModel(p_input_dim).to(args.device)

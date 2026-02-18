@@ -6,11 +6,12 @@ import big2Game
 import enumerateOptions
 
 from ML_SKHU.policy_value import PolicyValueModel
-from ML_SKHU.features import encode_belief_input
+from ML_SKHU.features import encode_belief_input, encode_full_info_input
 
 
-def load_policy_model(path, device="cpu"):
-    sample = encode_belief_input(big2Game.big2Game(), 1)
+def load_policy_model(path, device="cpu", full_info=False):
+    encoder = encode_full_info_input if full_info else encode_belief_input
+    sample = encoder(big2Game.big2Game(), 1)
     model = PolicyValueModel(sample.shape[0], hidden_dim=256).to(device)
     model.load_state_dict(torch.load(path, map_location=device))
     model.eval()
@@ -36,8 +37,9 @@ def heuristic_action(game):
     return enumerateOptions.passInd
 
 
-def model_action(model, game, device="cpu"):
-    belief_in = encode_belief_input(game, game.playersGo)
+def model_action(model, game, device="cpu", full_info=False):
+    encoder = encode_full_info_input if full_info else encode_belief_input
+    belief_in = encoder(game, game.playersGo)
     mask = torch.tensor(
         np.isfinite(
             big2Game.convertAvailableActions(
@@ -52,7 +54,7 @@ def model_action(model, game, device="cpu"):
     return int(torch.argmax(logits, dim=-1).item())
 
 
-def play_game(model, device="cpu", opp_actor="heuristic", opp_model=None):
+def play_game(model, device="cpu", opp_actor="heuristic", opp_model=None, full_info=False):
     model.eval()
     game = big2Game.big2Game()
     wins = [0, 0, 0, 0]
@@ -60,14 +62,14 @@ def play_game(model, device="cpu", opp_actor="heuristic", opp_model=None):
     while not game.gameOver:
         player = game.playersGo
         if player == 1:
-            action = model_action(model, game, device=device)
+            action = model_action(model, game, device=device, full_info=full_info)
         else:
             if opp_actor == "heuristic":
                 action = heuristic_action(game)
             elif opp_actor == "random":
                 action = random_action(game)
             elif opp_actor == "model":
-                action = model_action(opp_model, game, device=device)
+                action = model_action(opp_model, game, device=device, full_info=full_info)
             else:
                 raise ValueError(f"unsupported opp_actor {opp_actor}")
 
@@ -91,20 +93,28 @@ def main():
     parser.add_argument("--opponent", choices=["heuristic", "random", "model"], default="heuristic")
     parser.add_argument("--opponent-model", default=None)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--full-info", action="store_true")
     args = parser.parse_args()
 
-    sample_input = encode_belief_input(big2Game.big2Game(), 1)
+    encoder = encode_full_info_input if args.full_info else encode_belief_input
+    sample_input = encoder(big2Game.big2Game(), 1)
     model = PolicyValueModel(sample_input.shape[0], hidden_dim=256).to(args.device)
     model.load_state_dict(torch.load(args.policy_ckpt, map_location=args.device))
 
     opp_model = None
     if args.opponent == "model":
-        opp_model = load_policy_model(args.opponent_model, device=args.device)
+        opp_model = load_policy_model(args.opponent_model, device=args.device, full_info=args.full_info)
 
     wins = np.zeros(4)
     rewards = [[] for _ in range(4)]
     for _ in range(args.games):
-        w, r = play_game(model, device=args.device, opp_actor=args.opponent, opp_model=opp_model)
+        w, r = play_game(
+            model,
+            device=args.device,
+            opp_actor=args.opponent,
+            opp_model=opp_model,
+            full_info=args.full_info,
+        )
         wins += np.array(w)
         for i in range(4):
             rewards[i].append(r[i])

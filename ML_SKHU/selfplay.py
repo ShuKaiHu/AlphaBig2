@@ -3,7 +3,11 @@ import torch
 import enumerateOptions
 import big2Game
 
-from ML_SKHU.features import encode_belief_input, encode_policy_input, belief_targets
+from ML_SKHU.features import (
+    encode_belief_input,
+    encode_full_info_with_belief,
+    belief_targets,
+)
 from ML_SKHU.mcts import MCTS
 
 
@@ -16,11 +20,11 @@ def _apply_action(game, action):
 
 
 def _uniform_belief(game, perspective_player):
-    belief = np.zeros((52, 3), dtype=np.float32)
-    targets, mask = belief_targets(game, perspective_player)
+    belief = np.zeros((52, 4), dtype=np.float32)
+    _, mask = belief_targets(game, perspective_player)
     for i in range(52):
         if mask[i] > 0:
-            belief[i] = np.array([1.0 / 3.0] * 3, dtype=np.float32)
+            belief[i] = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0], dtype=np.float32)
     return belief
 
 
@@ -53,11 +57,15 @@ def make_policy_value_fn(belief_model, policy_value_model, device="cpu"):
             b_in = torch.from_numpy(belief_in).float().unsqueeze(0).to(device)
             b_logits = belief_model(b_in)
             b_probs = torch.softmax(b_logits, dim=-1).cpu().numpy()[0]
-        policy_in = encode_policy_input(game, perspective_player, b_probs)
+        policy_in = encode_full_info_with_belief(game, perspective_player, b_probs)
+        avail = game.returnAvailableActions().astype(np.float32)
+        action_mask = torch.tensor(
+            np.isfinite(big2Game.convertAvailableActions(avail)).astype(np.float32)
+        ).unsqueeze(0).to(device)
         with torch.no_grad():
             p_in = torch.from_numpy(policy_in).float().unsqueeze(0).to(device)
-            p_logits, value = policy_value_model(p_in)
-        return p_logits.cpu().numpy()[0], float(value.cpu().numpy()[0][0])
+            p_logits, value = policy_value_model(p_in, action_mask)
+        return p_logits.cpu().numpy()[0], float(value.view(-1).cpu().numpy()[0])
     return _fn
 
 
@@ -89,7 +97,7 @@ def run_selfplay_episode(
                 b_logits = belief_model(b_in)
                 b_probs = torch.softmax(b_logits, dim=-1).cpu().numpy()[0]
 
-        policy_in = encode_policy_input(game, player, b_probs)
+        policy_in = encode_full_info_with_belief(game, player, b_probs)
 
         belief_data.append((belief_in, b_target, b_mask))
 
@@ -113,8 +121,8 @@ def run_selfplay_episode(
 
     rewards = game.rewards
     policy_data_with_values = []
-    for policy_in, policy_target, player in policy_data:
+    for policy_in, policy_target, player, action_mask in policy_data:
         value_target = 1.0 if rewards[player - 1] > 0 else -1.0
-        policy_data_with_values.append((policy_in, policy_target, value_target))
+        policy_data_with_values.append((policy_in, policy_target, value_target, action_mask))
 
     return belief_data, policy_data_with_values
