@@ -1,10 +1,13 @@
 import torch
 import torch.nn as nn
+import enumerateOptions
 
 
 class PolicyValueModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim=512, action_dim=1695):
+    def __init__(self, input_dim, hidden_dim=512, action_dim=None):
         super().__init__()
+        if action_dim is None:
+            action_dim = enumerateOptions.passInd + 1
         self.shared = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),

@@ -40,10 +40,14 @@ def heuristic_action(game):
 def model_action(model, game, device="cpu", full_info=False):
     encoder = encode_full_info_input if full_info else encode_belief_input
     belief_in = encoder(game, game.playersGo)
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
     mask = torch.tensor(
         np.isfinite(
             big2Game.convertAvailableActions(
-                game.returnAvailableActions().astype(np.float32)
+                avail.astype(np.float32)
             )
         ).astype(np.float32)
     ).unsqueeze(0).to(device)

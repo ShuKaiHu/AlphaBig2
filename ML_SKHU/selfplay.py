@@ -20,11 +20,11 @@ def _apply_action(game, action):
 
 
 def _uniform_belief(game, perspective_player):
-    belief = np.zeros((52, 4), dtype=np.float32)
+    belief = np.zeros((52, 3), dtype=np.float32)
     _, mask = belief_targets(game, perspective_player)
     for i in range(52):
         if mask[i] > 0:
-            belief[i] = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0], dtype=np.float32)
+            belief[i] = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float32)
     return belief
 
 
@@ -45,6 +45,23 @@ def _random_action(game):
     if valid.size == 0:
         return enumerateOptions.passInd
     return int(np.random.choice(valid))
+
+
+def _policy_only_action(model, game, device="cpu"):
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
+    belief_in = encode_belief_input(game, game.playersGo)
+    action_mask = np.isfinite(
+        big2Game.convertAvailableActions(avail.astype(np.float32))
+    ).astype(np.float32)
+    with torch.no_grad():
+        p_in = torch.from_numpy(belief_in).float().unsqueeze(0).to(device)
+        mask_t = torch.from_numpy(action_mask).float().unsqueeze(0).to(device)
+        logits, _ = model(p_in, mask_t)
+        action = int(torch.argmax(logits, dim=-1).item())
+    return action
 
 
 def make_policy_value_fn(belief_model, policy_value_model, device="cpu"):
@@ -72,19 +89,26 @@ def make_policy_value_fn(belief_model, policy_value_model, device="cpu"):
 def run_selfplay_episode(
     belief_model=None,
     policy_value_model=None,
+    policy_only_model=None,
     n_simulations=50,
     temperature=1.0,
     device="cpu",
     policy_player=1,
     opponent_policy="selfplay",
+    belief_min_turn=0,
+    belief_decay=0.5,
 ):
     game = big2Game.big2Game()
-    policy_value_fn = make_policy_value_fn(belief_model, policy_value_model, device=device)
-    mcts = MCTS(policy_value_fn, n_simulations=n_simulations)
+    use_mcts = n_simulations and n_simulations > 0 and policy_value_model is not None
+    if use_mcts:
+        policy_value_fn = make_policy_value_fn(belief_model, policy_value_model, device=device)
+        mcts = MCTS(policy_value_fn, n_simulations=n_simulations)
 
     belief_data = []
     policy_data = []
+    pending_beliefs = []
 
+    turn_idx = 0
     while not game.gameOver:
         player = game.playersGo
         belief_in = encode_belief_input(game, player)
@@ -99,12 +123,12 @@ def run_selfplay_episode(
 
         policy_in = encode_full_info_with_belief(game, player, b_probs)
 
-        belief_data.append((belief_in, b_target, b_mask))
-
         action_mask = np.isfinite(big2Game.convertAvailableActions(game.returnAvailableActions().astype(np.float32))).astype(np.float32)
 
-        if player != policy_player:
-            if opponent_policy == "heuristic":
+        if player != policy_player or not use_mcts:
+            if player == policy_player and policy_only_model is not None:
+                action = _policy_only_action(policy_only_model, game, device=device)
+            elif opponent_policy == "heuristic":
                 action = _min_play_action(game)
             else:
                 action = _random_action(game)
@@ -117,7 +141,23 @@ def run_selfplay_episode(
                 policy_target[action] = 1.0
             policy_data.append((policy_in, policy_target, player, action_mask))
 
+        # When a non-pass happens, backpropagate supervision to prior turns with decay.
+        if action != enumerateOptions.passInd and pending_beliefs:
+            reveal_turn = turn_idx - 1
+            for (p_in, p_target, p_mask, p_turn) in pending_beliefs:
+                if p_turn < belief_min_turn:
+                    continue
+                dist = max(0, reveal_turn - p_turn)
+                weight = belief_decay ** dist
+                belief_data.append((p_in, p_target, p_mask, float(weight)))
+            pending_beliefs.clear()
+
+        # Store current state for potential future supervision.
+        if turn_idx >= belief_min_turn:
+            pending_beliefs.append((belief_in, b_target, b_mask, turn_idx))
+
         _apply_action(game, action)
+        turn_idx += 1
 
     rewards = game.rewards
     policy_data_with_values = []

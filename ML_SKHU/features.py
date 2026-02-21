@@ -1,9 +1,10 @@
 import numpy as np
 import gameLogic
+import enumerateOptions
 
 NUM_PLAYERS = 4
 NUM_CARDS = 52
-NUM_ACTIONS = 1695
+NUM_ACTIONS = enumerateOptions.passInd + 1
 HISTORY_LEN = 300
 
 
@@ -34,6 +35,12 @@ def _played_mask(game):
     if hasattr(game, "cardsPlayed"):
         return np.clip(game.cardsPlayed.sum(axis=0), 0, 1).astype(np.float32)
     return np.zeros((NUM_CARDS,), dtype=np.float32)
+
+
+def _played_by_player(game):
+    if hasattr(game, "cardsPlayed"):
+        return np.clip(game.cardsPlayed, 0, 1).astype(np.float32)
+    return np.zeros((NUM_PLAYERS, NUM_CARDS), dtype=np.float32)
 
 
 def _hand_features(hand):
@@ -121,42 +128,9 @@ def _history_features(game, history_len=HISTORY_LEN):
 
 
 def encode_belief_input(game, perspective_player):
-    my_hand = _card_mask(game.currentHands[perspective_player])
-    played = _played_mask(game)
-    remaining = np.array(
-        [len(game.currentHands[i]) for i in range(1, 5)],
-        dtype=np.float32,
-    ) / 13.0
-    current_player = _one_hot(game.playersGo - 1, NUM_PLAYERS)
-    control = np.array([1.0 if game.control else 0.0], dtype=np.float32)
-    must_play_club3 = np.array([1.0 if game.mustPlayClub3 else 0.0], dtype=np.float32)
-    passed = np.array(
-        [1.0 if game.passedThisRound[i] else 0.0 for i in range(1, 5)],
-        dtype=np.float32,
-    )
-    last_player = _one_hot(game.lastPlayedPlayer - 1, NUM_PLAYERS)
-
-    history = _history_features(game)
-    prev_type, prev_rank, prev_suit, prev_straight = _hand_features(
-        game.handsPlayed[game.goIndex - 1].hand if game.goIndex - 1 in game.handsPlayed else None
-    )
-
-    features = [
-        my_hand,
-        played,
-        remaining,
-        current_player,
-        control,
-        must_play_club3,
-        passed,
-        last_player,
-        history,
-        prev_type,
-        prev_rank,
-        prev_suit,
-        prev_straight,
-    ]
-    return np.concatenate(features, axis=0).astype(np.float32)
+    played_by_player = _played_by_player(game)
+    # Simplified belief input: only played cards per player (P1..P4).
+    return played_by_player.reshape(-1).astype(np.float32)
 
 
 def encode_full_info_input(game, perspective_player):
@@ -255,15 +229,44 @@ def encode_full_info_input_known(game, perspective_player):
     return np.concatenate(features, axis=0).astype(np.float32)
 
 
-def encode_full_info_with_belief(game, perspective_player, belief_probs):
+def encode_value_input_fullinfo(game):
+    # Value-only input: full hands + last hand type (+any) + pass flags.
+    hands = []
+    for i in range(1, 5):
+        hands.append(_card_mask(game.currentHands[i]))
+    all_hands = np.concatenate(hands, axis=0)
+
+    prev_type, _, _, _ = _hand_features(
+        game.handsPlayed[game.goIndex - 1].hand if game.goIndex - 1 in game.handsPlayed else None
+    )
+    # Add extra "any" slot as part of hand-type one-hot when control is with the current player.
+    any_flag = np.array([1.0 if game.control else 0.0], dtype=np.float32)
+    if game.control:
+        prev_type = np.zeros_like(prev_type)
+    hand_type = np.concatenate([prev_type, any_flag], axis=0)
+
+    passed = np.array(
+        [1.0 if game.passedThisRound[i] else 0.0 for i in range(1, 5)],
+        dtype=np.float32,
+    )
+
+    current_player = _one_hot(game.playersGo - 1, NUM_PLAYERS)
+
+    return np.concatenate([all_hands, hand_type, current_player, passed], axis=0).astype(np.float32)
+
+
+def encode_full_info_with_belief(game, perspective_player, belief_probs, margin=0.8):
     my_hand = _card_mask(game.currentHands[perspective_player])
     played = _played_mask(game)
     unknown_mask = 1.0 - np.clip(played + my_hand, 0, 1)
 
-    # belief_probs: [52,4] (p2, p3, p4, unknown)
-    p2 = belief_probs[:, 0] * unknown_mask
-    p3 = belief_probs[:, 1] * unknown_mask
-    p4 = belief_probs[:, 2] * unknown_mask
+    # belief_probs: [52,3] (p2, p3, p4). Use confidence gap to gate low-confidence cards.
+    top2 = np.partition(belief_probs, -2, axis=1)[:, -2:]
+    confidence = top2[:, 1] - top2[:, 0]
+    conf_mask = (confidence >= margin).astype(np.float32)
+    p2 = belief_probs[:, 0] * unknown_mask * conf_mask
+    p3 = belief_probs[:, 1] * unknown_mask * conf_mask
+    p4 = belief_probs[:, 2] * unknown_mask * conf_mask
 
     hands = []
     for i in range(1, 5):

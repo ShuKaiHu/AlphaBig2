@@ -8,8 +8,8 @@ class ReplayBuffer:
         self.belief = deque(maxlen=capacity)
         self.policy = deque(maxlen=capacity)
 
-    def add_belief(self, x, target, mask):
-        self.belief.append((x, target, mask))
+    def add_belief(self, x, target, mask, weight=1.0):
+        self.belief.append((x, target, mask, weight))
 
     def add_policy(self, x, policy_target, value_target, action_mask):
         self.policy.append((x, policy_target, value_target, action_mask))

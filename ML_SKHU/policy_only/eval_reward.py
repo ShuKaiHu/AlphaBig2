@@ -40,18 +40,23 @@ def play_game(
         player = game.playersGo
         if player == 1:
             belief_in = encoder(game, player)
-            mask = torch.tensor(
-                np.isfinite(
-                    big2Game.convertAvailableActions(
-                        game.returnAvailableActions().astype(np.float32)
+            avail = game.returnAvailableActions()
+            valid = np.flatnonzero(avail == 1)
+            if valid.size == 0:
+                action = enumerateOptions.passInd
+            else:
+                mask = torch.tensor(
+                    np.isfinite(
+                        big2Game.convertAvailableActions(
+                            avail.astype(np.float32)
+                        )
+                    ).astype(np.float32)
+                ).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    logits, _ = model(
+                        torch.from_numpy(belief_in).float().unsqueeze(0).to(device), mask
                     )
-                ).astype(np.float32)
-            ).unsqueeze(0).to(device)
-            with torch.no_grad():
-                logits, _ = model(
-                    torch.from_numpy(belief_in).float().unsqueeze(0).to(device), mask
-                )
-            action = int(torch.argmax(logits, dim=-1).item())
+                action = int(torch.argmax(logits, dim=-1).item())
         else:
             if opp_actor == "heuristic":
                 action = heuristic_action(game)
@@ -61,18 +66,23 @@ def play_game(
                 action = int(np.random.choice(valid)) if valid.size > 0 else enumerateOptions.passInd
             elif opp_actor == "model":
                 belief_in = encoder(game, player)
-                mask = torch.tensor(
-                    np.isfinite(
-                        big2Game.convertAvailableActions(
-                            game.returnAvailableActions().astype(np.float32)
+                avail = game.returnAvailableActions()
+                valid = np.flatnonzero(avail == 1)
+                if valid.size == 0:
+                    action = enumerateOptions.passInd
+                else:
+                    mask = torch.tensor(
+                        np.isfinite(
+                            big2Game.convertAvailableActions(
+                                avail.astype(np.float32)
+                            )
+                        ).astype(np.float32)
+                    ).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        logits, _ = opp_model(
+                            torch.from_numpy(belief_in).float().unsqueeze(0).to(device), mask
                         )
-                    ).astype(np.float32)
-                ).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    logits, _ = opp_model(
-                        torch.from_numpy(belief_in).float().unsqueeze(0).to(device), mask
-                    )
-                action = int(torch.argmax(logits, dim=-1).item())
+                    action = int(torch.argmax(logits, dim=-1).item())
             else:
                 raise ValueError(f"unsupported opp_actor {opp_actor}")
         if action == enumerateOptions.passInd:

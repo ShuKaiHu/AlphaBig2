@@ -8,7 +8,7 @@ import big2Game
 import enumerateOptions
 
 from ML_SKHU.belief import BeliefModel
-from ML_SKHU.features import encode_belief_input
+from ML_SKHU.features import encode_belief_input, belief_targets
 
 
 def random_non_pass(game):
@@ -29,29 +29,61 @@ def load_belief(path):
     return model
 
 
+def _phase(turn, total_turns):
+    if total_turns <= 0:
+        return "mid"
+    third = total_turns // 3
+    if turn < third:
+        return "early"
+    if turn < 2 * third:
+        return "mid"
+    return "late"
+
+
 def run_episode(model, max_turns, margin):
     game = big2Game.big2Game()
     rows = []
     turn = 0
     while not game.gameOver and turn < max_turns:
         player = game.playersGo
-        belief_in = encode_belief_input(game, player)
+        belief_in = encode_belief_input(game, 1)
         with torch.no_grad():
             logits = model(torch.from_numpy(belief_in).float().unsqueeze(0))
             probs = torch.softmax(logits, dim=-1).squeeze(0).numpy()
-        top_idx = np.argmax(probs, axis=1)
+        targets, mask = belief_targets(game, 1)
+        valid = mask > 0
         top2 = np.partition(probs, -2, axis=1)
         margin_values = top2[:, -1] - top2[:, -2]
-        unknown_rate = (margin_values < margin).mean()
-        known_rate = (top_idx != 3).sum() / 52
-        avg_margin = margin_values.mean()
+        preds = np.argmax(probs, axis=1)
+        if valid.sum() == 0:
+            unknown_rate = 0.0
+            known_rate = 0.0
+            avg_margin = 0.0
+            acc_known = 0.0
+            known_count = 0
+            unknown_count = 0
+        else:
+            valid_margins = margin_values[valid]
+            unknown_rate = float((valid_margins < margin).mean())
+            known_rate = 1.0 - unknown_rate
+            avg_margin = float(valid_margins.mean())
+            known_mask = valid & (margin_values >= margin)
+            known_count = int(known_mask.sum())
+            unknown_count = int(valid.sum() - known_count)
+            if known_count == 0:
+                acc_known = 0.0
+            else:
+                acc_known = float((preds[known_mask] == targets[known_mask]).mean())
         rows.append(
             {
                 "turn": turn,
                 "player": player,
-                "unknown_rate": unknown_rate,
-                "known_rate": known_rate,
-                "avg_margin": avg_margin,
+                "unknown_rate": f"{float(unknown_rate):.4f}",
+                "known_rate": f"{float(known_rate):.4f}",
+                "avg_margin": f"{float(avg_margin):.4f}",
+                "acc_known": f"{float(acc_known):.4f}",
+                "known_count": known_count,
+                "unknown_count": unknown_count,
             }
         )
         action = random_non_pass(game)
@@ -61,6 +93,10 @@ def run_episode(model, max_turns, margin):
             opt, n = enumerateOptions.getOptionNC(action)
             game.updateGame(opt, n)
         turn += 1
+    # Fill phase based on actual total turns in this game.
+    total_turns = len(rows)
+    for r in rows:
+        r["phase"] = _phase(r["turn"], total_turns)
     return rows
 
 
@@ -76,7 +112,20 @@ def main():
     rows = run_episode(model, args.max_turns, args.margin)
 
     with open(args.out, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["turn", "player", "unknown_rate", "known_rate", "avg_margin"])
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=[
+                "turn",
+                "phase",
+                "player",
+                "unknown_rate",
+                "known_rate",
+                "avg_margin",
+                "acc_known",
+                "known_count",
+                "unknown_count",
+            ],
+        )
         writer.writeheader()
         writer.writerows(rows)
 

@@ -8,7 +8,10 @@ def _softmax_masked(logits, mask):
     exp = np.exp(masked - max_val) * mask
     total = np.sum(exp)
     if total <= 0:
-        return mask / np.sum(mask)
+        denom = np.sum(mask)
+        if denom <= 0:
+            return np.zeros_like(mask, dtype=np.float32)
+        return mask / denom
     return exp / total
 
 
@@ -59,6 +62,11 @@ class MCTS:
     def _expand(self, node, perspective_player):
         logits, value = self.policy_value_fn(node.game, perspective_player)
         avail = node.game.returnAvailableActions().astype(np.float32)
+        if np.sum(avail) <= 0:
+            child_game = node.game.clone()
+            _apply_action(child_game, enumerateOptions.passInd)
+            node.children[enumerateOptions.passInd] = TreeNode(child_game, prior=1.0)
+            return float(value)
         priors = _softmax_masked(logits, avail)
         for action in np.flatnonzero(avail == 1):
             child_game = node.game.clone()
@@ -99,6 +107,8 @@ class MCTS:
 
     def select_action(self, game, perspective_player, temperature=1.0):
         visits = self.search(game, perspective_player)
+        if np.sum(visits) <= 0:
+            return enumerateOptions.passInd, visits
         if temperature <= 0:
             return int(np.argmax(visits)), visits
         probs = visits ** (1.0 / temperature)

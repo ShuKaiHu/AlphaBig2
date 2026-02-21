@@ -38,6 +38,10 @@ def select_action(game, actor, model, device, epsilon=0.0, full_info=False):
     if actor == "model":
         if model is None:
             return random_action(game)
+        avail = game.returnAvailableActions()
+        valid = np.flatnonzero(avail == 1)
+        if valid.size == 0:
+            return enumerateOptions.passInd
         encoder = encode_full_info_input if full_info else encode_belief_input
         belief_in = encoder(game, game.playersGo)
         mask = np.isfinite(

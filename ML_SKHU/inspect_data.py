@@ -110,7 +110,8 @@ def main():
         device=args.device,
     )
 
-    belief_in, b_target, b_mask = belief_data[0]
+    belief_sample = belief_data[0]
+    belief_in, b_target, b_mask = belief_sample[:3]
     policy_in, policy_target, value_target = policy_data[0]
 
     parts = _slice_features(belief_in)

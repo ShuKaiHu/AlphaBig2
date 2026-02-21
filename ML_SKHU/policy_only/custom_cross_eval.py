@@ -63,7 +63,11 @@ def load_model(path, encoder, device="cpu"):
 
 def action_from_model(model, encoder, game, device="cpu"):
     belief_in = encoder(game, game.playersGo)
-    avail = game.returnAvailableActions().astype(np.float32)
+    avail = game.returnAvailableActions()
+    valid = np.flatnonzero(avail == 1)
+    if valid.size == 0:
+        return enumerateOptions.passInd
+    avail = avail.astype(np.float32)
     mask = torch.tensor(
         np.isfinite(big2Game.convertAvailableActions(avail)).astype(np.float32)
     ).unsqueeze(0).to(device)

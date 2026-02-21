@@ -10,6 +10,7 @@ OPPONENT=heuristic
 EVAL_GAMES=200
 MODEL_DIR="ML_SKHU/models/${OPPONENT}"
 FULLINFO_MODEL="policy_best/policy_only_fullinfo_vs_heuristic.pt"
+BELIEF_CKPT="policy_best/belief_only_margin0.8_accknown_20260219_211436.pt"
 
 echo "=== MCTS train (belief + policy_value) ==="
 python -m ML_SKHU.train \
@@ -18,13 +19,14 @@ python -m ML_SKHU.train \
   --batch-size "$BATCH_SIZE" \
   --updates-per-episode "$UPDATES_PER_EPISODE" \
   --policy-weight "$POLICY_WEIGHT" \
-  --opponent "$OPPONENT"
+  --opponent "$OPPONENT" \
+  --belief-ckpt "$BELIEF_CKPT"
 
 echo "=== MCTS eval vs heuristic ==="
 python -m ML_SKHU.eval \
   --games "$EVAL_GAMES" \
   --simulations "$SIMULATIONS" \
-  --belief-ckpt "${MODEL_DIR}/belief.pt" \
+  --belief-ckpt "$BELIEF_CKPT" \
   --policy-ckpt "${MODEL_DIR}/policy_value.pt" \
   --opponent heuristic
 

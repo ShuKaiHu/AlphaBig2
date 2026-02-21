@@ -318,17 +318,25 @@ class big2Game:
             self.playersGo += 1
             if self.playersGo == 5:
                 self.playersGo = 1
+            # skip players who already passed this round
+            while self.control == 0 and self.passedThisRound[self.playersGo]:
+                self.playersGo += 1
+                if self.playersGo == 5:
+                    self.playersGo = 1
             return
         cPlayer = self.playersGo
         self.passedThisRound[cPlayer] = False
-        if nCards == 1:
-            handToPlay = np.array([self.currentHands[self.playersGo][option]])
-        elif nCards == 2:
-            handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseTwoCardIndices[option]]
-        elif nCards == 4:
-            handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseFourCardIndices[option]]
+        if isinstance(option, (list, tuple, np.ndarray)):
+            handToPlay = np.array(option, dtype=int)
         else:
-            handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseFiveCardIndices[option]]
+            if nCards == 1:
+                handToPlay = np.array([self.currentHands[self.playersGo][option]])
+            elif nCards == 2:
+                handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseTwoCardIndices[option]]
+            elif nCards == 4:
+                handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseFourCardIndices[option]]
+            else:
+                handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseFiveCardIndices[option]]
         for i in handToPlay:
             self.cardsPlayed[self.playersGo-1][i-1] = 1
         self.actionHistory.append({"player": cPlayer, "hand": handToPlay.copy(), "pass": False})
@@ -348,6 +356,11 @@ class big2Game:
         self.playersGo += 1
         if self.playersGo == 5:
             self.playersGo = 1
+        # skip players who already passed this round
+        while self.control == 0 and self.passedThisRound[self.playersGo]:
+            self.playersGo += 1
+            if self.playersGo == 5:
+                self.playersGo = 1
             
     def assignRewards(self):
         totCardsLeft = 0
@@ -431,6 +444,10 @@ class big2Game:
 
     def _action_includes_card(self, action, card_id):
         opt, nCards = enumerateOptions.getOptionNC(action)
+        if nCards == 0:
+            return False
+        if isinstance(opt, (list, tuple, np.ndarray)):
+            return card_id in opt
         if nCards == 1:
             return self.currentHands[self.playersGo][opt] == card_id
         if nCards == 2:
@@ -442,14 +459,11 @@ class big2Game:
     def returnAvailableActions(self):
     
         currHand = self.currentHands[self.playersGo]
-        availableActions = np.zeros((enumerateOptions.nActions[5]+1,))
+        availableActions = np.zeros((enumerateOptions.passInd + 1,))
         if currHand.size == 0:
             return availableActions
         
         if self.control == 0:
-            #allow pass action
-            availableActions[enumerateOptions.passInd] = 1
-            
             prevHand = self.handsPlayed[self.goIndex-1].hand
             nCardsToBeat = len(prevHand)
             prev_is_spade_two = (nCardsToBeat == 1 and prevHand[0] == 52)
@@ -480,7 +494,15 @@ class big2Game:
                 options = np.array([], dtype=int)
 
             for option in options:
-                index = enumerateOptions.getIndex(option, nCardsToBeat)
+                if nCardsToBeat == 1:
+                    cards = [currHand[option]]
+                elif nCardsToBeat == 2:
+                    card_inds = enumerateOptions.inverseTwoCardIndices[option]
+                    cards = currHand[card_inds]
+                else:
+                    card_inds = enumerateOptions.inverseFiveCardIndices[option]
+                    cards = currHand[card_inds]
+                index = enumerateOptions.action_index_from_cards(cards)
                 availableActions[index] = 1
 
             if not prev_is_spade_two:
@@ -493,7 +515,9 @@ class big2Game:
                     )
                     if not isinstance(four_kind_options, int):
                         for option in four_kind_options:
-                            index = enumerateOptions.getIndex(option, 5)
+                            card_inds = enumerateOptions.inverseFiveCardIndices[option]
+                            cards = currHand[card_inds]
+                            index = enumerateOptions.action_index_from_cards(cards)
                             availableActions[index] = 1
 
                 straight_flush_options = enumerateOptions.straightFlushOnlyOptions(
@@ -501,7 +525,9 @@ class big2Game:
                 )
                 if not isinstance(straight_flush_options, int):
                     for option in straight_flush_options:
-                        index = enumerateOptions.getIndex(option, 5)
+                        card_inds = enumerateOptions.inverseFiveCardIndices[option]
+                        cards = currHand[card_inds]
+                        index = enumerateOptions.action_index_from_cards(cards)
                         availableActions[index] = 1
                 
             return availableActions
@@ -515,17 +541,22 @@ class big2Game:
             
             if not isinstance(oneCardOptions, int):
                 for option in oneCardOptions:
-                    index = enumerateOptions.getIndex(option, 1)
+                    cards = [currHand[option]]
+                    index = enumerateOptions.action_index_from_cards(cards)
                     availableActions[index] = 1
                 
             if not isinstance(twoCardOptions, int):
                 for option in twoCardOptions:
-                    index = enumerateOptions.getIndex(option, 2)
+                    card_inds = enumerateOptions.inverseTwoCardIndices[option]
+                    cards = currHand[card_inds]
+                    index = enumerateOptions.action_index_from_cards(cards)
                     availableActions[index] = 1
                     
             if not isinstance(fiveCardOptions, int):
                 for option in fiveCardOptions:
-                    index = enumerateOptions.getIndex(option, 5)
+                    card_inds = enumerateOptions.inverseFiveCardIndices[option]
+                    cards = currHand[card_inds]
+                    index = enumerateOptions.action_index_from_cards(cards)
                     availableActions[index] = 1
                     
             if self.mustPlayClub3 and self.playersGo == self.club3Player:
@@ -556,7 +587,7 @@ class big2Game:
         return reward, done, info
     
     def getCurrentState(self):
-        return self.playersGo, self.neuralNetworkInputs[self.playersGo].reshape(1,412), convertAvailableActions(self.returnAvailableActions()).reshape(1,1695)
+        return self.playersGo, self.neuralNetworkInputs[self.playersGo].reshape(1,412), convertAvailableActions(self.returnAvailableActions()).reshape(1,enumerateOptions.passInd + 1)
         
         
         

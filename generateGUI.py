@@ -2,19 +2,65 @@ import tkinter
 from tkinter import messagebox
 from PIL import Image, ImageTk
 import numpy as np
+import torch
 import big2Game
 import enumerateOptions
 
+from ML_SKHU.belief import BeliefModel
+from ML_SKHU.policy_value import PolicyValueModel
+from ML_SKHU.features import encode_belief_input, encode_full_info_with_belief, belief_targets
+
 mainGame = big2Game.big2Game()
+
+# Model paths (player1)
+BELIEF_CKPT = "policy_best/belief_only_margin0.8_accknown_20260219_191635.pt"
+POLICY_CKPT = "policy_best/policy_only_no_fullinfo_vs_heuristic_20260219_205951.pt"
+POLICY_IS_POLICY_ONLY = True
+DEVICE = "cpu"
+
+belief_model = None
+policy_value_model = None
+
+def _load_models():
+    global belief_model, policy_value_model
+    # Belief
+    b_in_dim = encode_belief_input(big2Game.big2Game(), 1).shape[0]
+    belief_model = BeliefModel(b_in_dim).to(DEVICE)
+    try:
+        belief_model.load_state_dict(torch.load(BELIEF_CKPT, map_location=DEVICE))
+        belief_model.eval()
+    except Exception as e:
+        print(f"[warn] belief ckpt incompatible with current input dim: {e}")
+        belief_model = None
+    # Policy/Value
+    if POLICY_IS_POLICY_ONLY:
+        p_in_dim = encode_belief_input(big2Game.big2Game(), 1).shape[0]
+    else:
+        dummy = big2Game.big2Game()
+        dummy_belief = np.zeros((52, 3), dtype=np.float32)
+        p_in_dim = int(encode_full_info_with_belief(dummy, 1, dummy_belief).shape[0])
+    policy_value_model = PolicyValueModel(p_in_dim, hidden_dim=256 if POLICY_IS_POLICY_ONLY else 512).to(DEVICE)
+    try:
+        policy_value_model.load_state_dict(torch.load(POLICY_CKPT, map_location=DEVICE))
+        policy_value_model.eval()
+    except Exception as e:
+        print(f"[warn] policy ckpt incompatible with current input dim: {e}")
+        policy_value_model = None
+
+try:
+    _load_models()
+except Exception as e:
+    print(f"[warn] model load failed: {e}")
 
 top=tkinter.Tk()
 
-top.resizable(False, False)
+top.resizable(True, True)
 
 dX = 17
 hideOtherCards = 1
 playersGo = 1
 control = 0
+X_OFFSET = 200
 
 currSampledOption = -1
 
@@ -23,6 +69,7 @@ cardImages = {}
 cardImages2 = {}
 cardImages3 = {}
 cardImages4 = {}
+cardImages180 = {}
 resample_mode = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 for i in range(1,53):
     string = "cardImages/" + str(i) + ".png"
@@ -31,15 +78,21 @@ for i in range(1,53):
     cardImages2[i] = cardImages[i].rotate(270, expand=True)
     cardImages3[i] = cardImages[i]
     cardImages4[i] = cardImages[i].rotate(90, expand=True)
+    cardImages180[i] = cardImages[i].rotate(180, expand=True)
     cardImages[i] = ImageTk.PhotoImage(cardImages[i])
     cardImages2[i] = ImageTk.PhotoImage(cardImages2[i])
     cardImages3[i] = ImageTk.PhotoImage(cardImages3[i])
     cardImages4[i] = ImageTk.PhotoImage(cardImages4[i])
+    cardImages180[i] = ImageTk.PhotoImage(cardImages180[i])
 backOfCard = Image.open("cardImages/back.jpg")
 backOfCard = backOfCard.resize((63,91), resample_mode)
 backOfCardRotated = backOfCard.rotate(90, expand=True)
+backOfCardRotated180 = backOfCard.rotate(180, expand=True)
+backOfCardRotated270 = backOfCard.rotate(270, expand=True)
 backOfCard = ImageTk.PhotoImage(backOfCard)
 backOfCardRotated = ImageTk.PhotoImage(backOfCardRotated)
+backOfCardRotated180 = ImageTk.PhotoImage(backOfCardRotated180)
+backOfCardRotated270 = ImageTk.PhotoImage(backOfCardRotated270)
     
 player1Hand = {}
 player2Hand = {}
@@ -62,11 +115,11 @@ for i in range(5):
     prevHand1[i] = tkinter.Label(top)
     
 
-top.geometry("1200x780")
+top.geometry("1600x1000")
 top.title("Big 2 - Game Visualization and Testing")
 
 def updatePrevHands():
-    sX = 520
+    sX = 520 + X_OFFSET
     sY = 435
     cX = sX
     cY = sY
@@ -108,7 +161,7 @@ def updateCurrentOption(hand, passing=0):
         currentOption[i].config(image='')
     if passing == 1:
         return
-    sX = 1000
+    sX = 1000 + X_OFFSET
     sY = 115
     for i in range(len(hand)):
         currentOption[i].config(image=cardImages[hand[i]])
@@ -121,7 +174,7 @@ def updatePlayerHand(hand, player):
         #remove current hand
         for i in range(13):
             player1Hand[i].config(image='')
-        sX = 430
+        sX = 430 + X_OFFSET
         sY = 680
         #update hand
         for i in range(len(hand)):
@@ -133,7 +186,7 @@ def updatePlayerHand(hand, player):
         #remove current hand
         for i in range(13):
             player2Hand[i].config(image='')
-        sX = 70
+        sX = 70 + X_OFFSET
         sY = 600
         #update hand
         for i in range(len(hand)):
@@ -147,7 +200,7 @@ def updatePlayerHand(hand, player):
     elif player==3:
         for i in range(13):
             player3Hand[i].config(image='')
-        sX = 430
+        sX = 430 + X_OFFSET
         sY = 280
         for i in range(len(hand)):
             if hideOtherCards == 0:
@@ -160,13 +213,13 @@ def updatePlayerHand(hand, player):
     elif player==4:
         for i in range(13):
             player4Hand[i].config(image='')
-        sX = 1000
+        sX = 1000 + X_OFFSET
         sY = 600
         for i in range(len(hand)):
             if hideOtherCards == 0:
-                player4Hand[i].config(image=cardImages4[hand[i]])
+                player4Hand[i].config(image=cardImages2[hand[i]])
             else:
-                player4Hand[i].config(image=backOfCardRotated)
+                player4Hand[i].config(image=backOfCardRotated270)
             player4Hand[i].place(x=sX, y=sY)
             player4Hand[i].lift()
             sY -= dX
@@ -188,20 +241,8 @@ def playSelectedOption():
         else:
             print("something wrong with this option. It's an integer not equal to -1")
     else:
-        if len(option)==1:
-            mainGame.updateGame(option[0],1)
-        elif len(option)==2:
-            opInd = enumerateOptions.twoCardIndices[option[0]][option[1]]
-            mainGame.updateGame(opInd,2)
-        elif len(option)==3:
-            opInd = enumerateOptions.threeCardIndices[option[0]][option[1]][option[2]]
-            mainGame.updateGame(opInd,3)
-        elif len(option)==4:
-            opInd = enumerateOptions.fourCardIndices[option[0]][option[1]][option[2]][option[3]]
-            mainGame.updateGame(opInd,4)
-        else:
-            opInd = enumerateOptions.fiveCardIndices[option[0]][option[1]][option[2]][option[3]][option[4]]
-            mainGame.updateGame(opInd,5)
+        # option is a list of card IDs (1..52)
+        mainGame.updateGame(option, len(option))
             
     updateScreen()
     
@@ -228,6 +269,7 @@ def updateScreen():
     for i in range(5):
         currentOption[i].config(image='')
     updateValue()
+    updateModelInsights()
     probNegLogValue.set("")
     sampledOptionValue.set("")
     currSampledOption=-1
@@ -244,6 +286,169 @@ def updateScreen():
     
 def updateValue():
     valueValue.set("N/A")
+
+
+def _action_to_string(action):
+    if action == enumerateOptions.passInd:
+        return "pass"
+    cards, nC = enumerateOptions.getOptionNC(action)
+    if nC == 0:
+        return "pass"
+    return " ".join(_card_label(int(c)) for c in cards)
+
+
+def _card_label(card_id):
+    value = int(np.ceil(card_id / 4.0))
+    if value <= 7:
+        rank = str(value + 2)
+    elif value == 8:
+        rank = "10"
+    elif value == 9:
+        rank = "J"
+    elif value == 10:
+        rank = "Q"
+    elif value == 11:
+        rank = "K"
+    elif value == 12:
+        rank = "A"
+    else:
+        rank = "2"
+    suit_idx = (card_id - 1) % 4
+    suit = ["C", "D", "H", "S"][suit_idx]
+    return f"{rank}{suit}"
+
+
+def updateModelInsights():
+    if belief_model is None or policy_value_model is None:
+        modelInfoValue.set("Model: not loaded")
+        beliefInfoValue.set("")
+        policyInfoValue.set("")
+        policyRecValue.set("")
+        for i in range(beliefTopN):
+            beliefP2Cards[i].config(image='')
+            beliefP3Cards[i].config(image='')
+            beliefP4Cards[i].config(image='')
+        return
+    if mainGame.playersGo != 1:
+        modelInfoValue.set("Model: waiting (player1 only)")
+        beliefInfoValue.set("")
+        policyInfoValue.set("")
+        policyRecValue.set("")
+        for i in range(beliefTopN):
+            beliefP2Cards[i].config(image='')
+            beliefP3Cards[i].config(image='')
+            beliefP4Cards[i].config(image='')
+        return
+    player = 1
+    belief_in = encode_belief_input(mainGame, player)
+    with torch.no_grad():
+        b_in = torch.from_numpy(belief_in).float().unsqueeze(0).to(DEVICE)
+        b_logits = belief_model(b_in)
+        b_probs = torch.softmax(b_logits, dim=-1).cpu().numpy()[0]
+
+    targets, mask = belief_targets(mainGame, player)
+    valid = mask > 0
+    if valid.sum() > 0:
+        top2 = np.partition(b_probs, -2, axis=1)
+        margins = top2[:, -1] - top2[:, -2]
+        valid_m = margins[valid]
+        unknown_rate = float((valid_m < 0.5).mean())
+        known_rate = 1.0 - unknown_rate
+        avg_margin = float(valid_m.mean())
+        known_mask = valid & (margins >= 0.5)
+        if known_mask.sum() > 0:
+            preds = np.argmax(b_probs, axis=1)
+            acc_known = float((preds[known_mask] == targets[known_mask]).mean())
+        else:
+            acc_known = 0.0
+    else:
+        unknown_rate = known_rate = avg_margin = acc_known = 0.0
+
+    beliefInfoValue.set(
+        f"belief: acc_known={acc_known:.2f} known_rate={known_rate:.2f} avg_margin={avg_margin:.2f}"
+    )
+
+    # show believed cards for opponents (as card images) among unknown cards
+    valid_idx = np.flatnonzero(valid)
+    def _top_cards(col):
+        if valid_idx.size == 0:
+            return []
+        scores = b_probs[valid_idx, col]
+        top_idx = valid_idx[np.argsort(-scores)][:beliefTopN]
+        top_cards = [int(i) + 1 for i in top_idx]
+        return sorted(top_cards)
+
+    preds = np.argmax(b_probs, axis=1)
+    top2 = np.partition(b_probs, -2, axis=1)
+    margins = top2[:, -1] - top2[:, -2]
+    known_mask = valid & (margins >= 0.8)
+    p2_top = sorted([int(i) + 1 for i in np.flatnonzero(known_mask & (preds == 0))])
+    p3_top = sorted([int(i) + 1 for i in np.flatnonzero(known_mask & (preds == 1))])
+    p4_top = sorted([int(i) + 1 for i in np.flatnonzero(known_mask & (preds == 2))])
+
+    if checkVar2.get() == 1:
+        # P2 (left, vertical) - further left
+        sX = -100 + X_OFFSET
+        sY = 540
+        for i in range(beliefTopN):
+            if i < len(p2_top):
+                beliefP2Cards[i].config(image=cardImages2[p2_top[i]])
+            else:
+                beliefP2Cards[i].config(image='')
+            beliefP2Cards[i].place(x=sX, y=sY - i * (dX + 2))
+            beliefP2Cards[i].lift()
+
+        # P3 (top, horizontal) - further up
+        sX = 450 + X_OFFSET
+        sY = 140
+        for i in range(beliefTopN):
+            if i < len(p3_top):
+                beliefP3Cards[i].config(image=cardImages3[p3_top[i]])
+            else:
+                beliefP3Cards[i].config(image='')
+            beliefP3Cards[i].place(x=sX + i * (dX + 2), y=sY)
+            beliefP3Cards[i].lift()
+
+        # P4 (right, vertical) - further right
+        sX = 1150 + X_OFFSET
+        sY = 540
+        for i in range(beliefTopN):
+            if i < len(p4_top):
+                beliefP4Cards[i].config(image=cardImages4[p4_top[i]])
+            else:
+                beliefP4Cards[i].config(image='')
+            beliefP4Cards[i].place(x=sX, y=sY - i * (dX + 2))
+            beliefP4Cards[i].lift()
+    else:
+        for i in range(beliefTopN):
+            beliefP2Cards[i].config(image='')
+            beliefP3Cards[i].config(image='')
+            beliefP4Cards[i].config(image='')
+
+    if POLICY_IS_POLICY_ONLY:
+        policy_in = encode_belief_input(mainGame, player)
+    else:
+        policy_in = encode_full_info_with_belief(mainGame, player, b_probs)
+    action_mask = np.isfinite(
+        big2Game.convertAvailableActions(mainGame.returnAvailableActions().astype(np.float32))
+    ).astype(np.float32)
+    with torch.no_grad():
+        p_in = torch.from_numpy(policy_in).float().unsqueeze(0).to(DEVICE)
+        mask_t = torch.from_numpy(action_mask).float().unsqueeze(0).to(DEVICE)
+        logits, value = policy_value_model(p_in, mask_t)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+        value = float(value.cpu().numpy()[0])
+    valid_actions = np.flatnonzero(action_mask == 1)
+    if valid_actions.size == 0:
+        policyInfoValue.set("policy: no valid actions")
+        policyRecValue.set("")
+    else:
+        topk = valid_actions[np.argsort(-probs[valid_actions])][:5]
+        top_lines = [f"{_action_to_string(int(a))} ({probs[int(a)]:.2f})" for a in topk]
+        policyInfoValue.set("policy top5: " + " | ".join(top_lines))
+        best = int(topk[0])
+        policyRecValue.set(f"Policy recommend: {_action_to_string(best)} ({probs[best]:.2f})")
+    modelInfoValue.set(f"value={value:.2f}")
     
 def updateProbNegLog(index):
     probNegLogValue.set("N/A")
@@ -256,21 +461,11 @@ def updateOptions():
     availActions = mainGame.returnAvailableActions()
     for i in range(len(availActions)):
         if availActions[i] == 1:
-            (ind, nC) = enumerateOptions.getOptionNC(i)
-            if ind==-1:
+            (cards, nC) = enumerateOptions.getOptionNC(i)
+            if nC == 0:
                 options.append(-1)
-            elif nC == 1:
-                options.append(np.array([ind]))
-            elif nC == 2:
-                options.append(enumerateOptions.inverseTwoCardIndices[ind])
-            elif nC == 3:
-                options.append(enumerateOptions.inverseThreeCardIndices[ind])
-            elif nC == 4:
-                options.append(enumerateOptions.inverseFourCardIndices[ind])
-            elif nC == 5:
-                options.append(enumerateOptions.inverseFiveCardIndices[ind])
             else:
-                print("this shouldn't be possible")
+                options.append(np.array(cards))
     for i in range(len(options)):
         if isinstance(options[i],int):
             string = "pass"
@@ -278,7 +473,7 @@ def updateOptions():
         else:
             string = ""
             for k in range(len(options[i])):
-                string = string + str(options[i][k]) + " "
+                string = string + _card_label(int(options[i][k])) + " "
             listBox.insert(i,string)
     return options
 
@@ -295,20 +490,10 @@ def sampleFromNetwork():
     if currSampledOption == enumerateOptions.passInd:
         sampledOptionValue.set("pass")
     else:
-        ind, nC = enumerateOptions.getOptionNC(currSampledOption)
-        if nC==1:
-            option = ind
-        elif nC==2:
-            option = enumerateOptions.inverseTwoCardIndices[ind[0]]
-        elif nC==3:
-            option = enumerateOptions.inverseThreeCardIndices[ind[0]]
-        elif nC==4:
-            option = enumerateOptions.inverseFourCardIndices[ind[0]]
-        elif nC==5:
-            option = enumerateOptions.inverseFiveCardIndices[ind[0]]
+        option, nC = enumerateOptions.getOptionNC(currSampledOption)
         optString = ""
         for i in range(len(option)):
-            optString = optString + str(option[i]) + " "
+            optString = optString + _card_label(int(option[i])) + " "
         sampledOptionValue.set(str(optString))
 
 def onOptionSelect(evt):
@@ -319,20 +504,9 @@ def onOptionSelect(evt):
         updateCurrentOption(1,1)
         finalInd = enumerateOptions.passInd
     else:
-        hand = mainGame.currentHands[mainGame.playersGo][availableOptions[index]]
+        hand = availableOptions[index]
         updateCurrentOption(hand)
-        nC = len(availableOptions[index])
-        if nC==1:
-            optInd = availableOptions[index][0]
-        elif nC==2:
-            optInd = enumerateOptions.twoCardIndices[availableOptions[index][0]][availableOptions[index][1]]
-        elif nC==3:
-            optInd = enumerateOptions.threeCardIndices[availableOptions[index][0]][availableOptions[index][1]][availableOptions[index][2]]
-        elif nC==4:
-            optInd = enumerateOptions.fourCardIndices[availableOptions[index][0]][availableOptions[index][1]][availableOptions[index][2]][availableOptions[index][3]]
-        elif nC==5:
-            optInd = enumerateOptions.fiveCardIndices[availableOptions[index][0]][availableOptions[index][1]][availableOptions[index][2]][availableOptions[index][3]][availableOptions[index][4]]
-        finalInd = enumerateOptions.getIndex(optInd, nC)
+        finalInd = enumerateOptions.action_index_from_cards(hand)
     updateProbNegLog(finalInd)
     
         
@@ -355,13 +529,13 @@ def movePlayerCircle(player):
     else:
         plyrsGoCircle.itemconfigure(circ,fill="red")
     if player == 1:
-        plyrsGoCircle.place(x=540, y=615)
+        plyrsGoCircle.place(x=540 + X_OFFSET, y=615)
     elif player == 2:
-        plyrsGoCircle.place(x=170, y=510)
+        plyrsGoCircle.place(x=170 + X_OFFSET, y=510)
     elif player == 3:
-        plyrsGoCircle.place(x=540, y=375)
+        plyrsGoCircle.place(x=540 + X_OFFSET, y=375)
     else:
-        plyrsGoCircle.place(x=955, y=510)
+        plyrsGoCircle.place(x=955 + X_OFFSET, y=510)
         
 def updateNeuralNetwork(player):
     #update player's cards.
@@ -410,7 +584,7 @@ def updateNeuralNetwork(player):
         prevType[i].config(text=str(mainGame.neuralNetworkInputs[player][fInd+i-1]))
     
     
-xv = 510
+xv = 510 + X_OFFSET
 yv = 60
 xhd = 100
 valueTitle = tkinter.StringVar()
@@ -430,31 +604,58 @@ probNegLogValue = tkinter.StringVar()
 probNegLogValueLabel = tkinter.Label(top, textvariable=probNegLogValue, font=("Helvetica",12))
 probNegLogValueLabel.place(x=xv+200, y=yv+ndd)
 
+modelInfoValue = tkinter.StringVar()
+modelInfoValueLabel = tkinter.Label(top, textvariable=modelInfoValue, font=("Helvetica",12))
+modelInfoValueLabel.place(x=160 + X_OFFSET, y=800)
+beliefInfoValue = tkinter.StringVar()
+beliefInfoValueLabel = tkinter.Label(top, textvariable=beliefInfoValue, font=("Helvetica",10))
+beliefInfoValueLabel.place(x=160 + X_OFFSET, y=825)
+policyInfoValue = tkinter.StringVar()
+policyInfoValueLabel = tkinter.Label(top, textvariable=policyInfoValue, font=("Helvetica",10))
+policyInfoValueLabel.place(x=160 + X_OFFSET, y=850)
+policyRecValue = tkinter.StringVar()
+policyRecLabel = tkinter.Label(top, textvariable=policyRecValue, font=("Helvetica",12))
+policyRecLabel.place(x=160 + X_OFFSET, y=875)
+
 plyrsGoCircle = tkinter.Canvas(top, height=40,width=40)
 circ = plyrsGoCircle.create_oval(10,10,30,30,fill="red")
 
 sampleButton = tkinter.Button(top, text="Sample Random Option", command=sampleFromNetwork, height=1, width=27)
-sampleButton.place(x=xv + 50, y=yv+3*ndd-20)
+sampleButton.place(x=xv + 50, y=yv+5*ndd-20)
 
 sampledOptionTitle = tkinter.StringVar()
 sampledOptionTitle.set("Sampled Option:")
 sampledOptionLabel = tkinter.Label(top, textvariable=sampledOptionTitle, font=("Helvetica",12))
-sampledOptionLabel.place(x=xv,y=yv+4*ndd-15)
+sampledOptionLabel.place(x=xv,y=yv+6*ndd-15)
 sampledOptionValue = tkinter.StringVar()
 sampledOptionValueLabel = tkinter.Label(top, textvariable=sampledOptionValue, font=("Helvetica",12))
-sampledOptionValueLabel.place(x=xv+120, y=yv+4*ndd-15)
+sampledOptionValueLabel.place(x=xv+120, y=yv+6*ndd-15)
 
 playSampledOptionButton = tkinter.Button(top, text="Play Sampled Option", command=playSampledOption, height=1, width=20)
-playSampledOptionButton.place(x=xv+50, y=yv+5*ndd-15)
+playSampledOptionButton.place(x=xv+50, y=yv+7*ndd-15)
 
 movePlayerCircle(mainGame.playersGo)
 
 checkVar1 = tkinter.IntVar()
-C1 = tkinter.Checkbutton(top, text="Show Other Hands", command=changeShowHands, height=5, width=20)
-C1.place(x=165,y=290)
+C1 = tkinter.Checkbutton(
+    top, text="Show Other Hands", variable=checkVar1, command=changeShowHands
+)
+C1.place(x=160 + X_OFFSET, y=740)
+
+checkVar2 = tkinter.IntVar(value=1)
+def toggleShowPredictions():
+    updateModelInsights()
+
+C2 = tkinter.Checkbutton(
+    top,
+    text="Show Prediction of Other Hands",
+    variable=checkVar2,
+    command=toggleShowPredictions,
+)
+C2.place(x=160 + X_OFFSET, y=770)
 
 playOptionButton = tkinter.Button(top, text="Play Selected Option", command=playSelectedOption, height=1, width=18)
-playOptionButton.place(x=1050,y=70)
+playOptionButton.place(x=1050 + X_OFFSET, y=70)
 
 p1text = tkinter.StringVar()
 p2text = tkinter.StringVar()
@@ -468,18 +669,28 @@ p1text.set("Player 1")
 p2text.set("Player 2")
 p3text.set("Player 3")
 p4text.set("Player 4")
-p1Label.place(x=525,y=650)
-p2Label.place(x=80, y=365)
-p3Label.place(x=525,y=250)
-p4Label.place(x=1010,y=365)
+p1Label.place(x=525 + X_OFFSET, y=650)
+p2Label.place(x=80 + X_OFFSET, y=365)
+p3Label.place(x=525 + X_OFFSET, y=250)
+p4Label.place(x=1010 + X_OFFSET, y=365)
+
+# belief card placeholders (top-N)
+beliefTopN = 8
+beliefP2Cards = {}
+beliefP3Cards = {}
+beliefP4Cards = {}
+for i in range(beliefTopN):
+    beliefP2Cards[i] = tkinter.Label(top)
+    beliefP3Cards[i] = tkinter.Label(top)
+    beliefP4Cards[i] = tkinter.Label(top)
 
 cOptionsText = tkinter.StringVar()
 cOptionsLabel = tkinter.Label(top, textvariable=cOptionsText, font=("Helvetica",16))
 cOptionsText.set("Current Options")
-cOptionsLabel.place(x=895,y=31)
+cOptionsLabel.place(x=895 + X_OFFSET, y=31)
 
 listFrame = tkinter.Frame(top, width=150, height=100)
-listFrame.place(x=850,y=75)
+listFrame.place(x=850 + X_OFFSET, y=75)
 
 scrollbar = tkinter.Scrollbar(listFrame)
 scrollbar.pack(side=tkinter.RIGHT,fill=tkinter.Y)

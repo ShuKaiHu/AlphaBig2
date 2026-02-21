@@ -5,7 +5,74 @@ import itertools
 import numpy as np
 import gameLogic
 
-nActions = np.array([13,33,31,330,1287,1694])
+
+def _card_id(rank_value, suit_idx):
+    # rank_value: 1-13 (3..2), suit_idx: 1-4 (C,D,H,S)
+    return (rank_value - 1) * 4 + suit_idx
+
+
+SINGLE_ACTIONS = list(range(1, 53))
+SINGLE_INDEX = {cid: idx for idx, cid in enumerate(SINGLE_ACTIONS)}
+
+PAIR_ACTIONS = []
+for r in range(1, 14):
+    cards = [_card_id(r, s) for s in range(1, 5)]
+    for i in range(4):
+        for j in range(i + 1, 4):
+            PAIR_ACTIONS.append((cards[i], cards[j]))
+PAIR_INDEX = {tuple(sorted(c)): idx for idx, c in enumerate(PAIR_ACTIONS)}
+
+# Five-card legal actions: straight, full house, four of a kind, straight flush
+FIVE_ACTIONS_SET = set()
+
+# Straights (include straight flush; will be de-duplicated)
+for seq in gameLogic._STRAIGHT_SEQUENCES:
+    card_choices = [[_card_id(v, s) for s in range(1, 5)] for v in seq]
+    for combo in itertools.product(*card_choices):
+        hand = tuple(sorted(combo))
+        if gameLogic.isStraight(np.array(hand)):
+            FIVE_ACTIONS_SET.add(hand)
+
+# Full house
+for three_val in range(1, 14):
+    for pair_val in range(1, 14):
+        if pair_val == three_val:
+            continue
+        three_cards = [_card_id(three_val, s) for s in range(1, 5)]
+        pair_cards = [_card_id(pair_val, s) for s in range(1, 5)]
+        for three_combo in itertools.combinations(three_cards, 3):
+            for pair_combo in itertools.combinations(pair_cards, 2):
+                hand = tuple(sorted(three_combo + pair_combo))
+                FIVE_ACTIONS_SET.add(hand)
+
+# Four of a kind
+for quad_val in range(1, 14):
+    quad_cards = [_card_id(quad_val, s) for s in range(1, 5)]
+    for kicker_val in range(1, 14):
+        if kicker_val == quad_val:
+            continue
+        for s in range(1, 5):
+            hand = tuple(sorted(quad_cards + [_card_id(kicker_val, s)]))
+            FIVE_ACTIONS_SET.add(hand)
+
+# Straight flush
+for seq in gameLogic._STRAIGHT_SEQUENCES:
+    for s in range(1, 5):
+        hand = tuple(sorted(_card_id(v, s) for v in seq))
+        FIVE_ACTIONS_SET.add(hand)
+
+FIVE_ACTIONS = sorted(FIVE_ACTIONS_SET)
+FIVE_INDEX = {tuple(c): idx for idx, c in enumerate(FIVE_ACTIONS)}
+
+N_SINGLE = len(SINGLE_ACTIONS)
+N_PAIR = len(PAIR_ACTIONS)
+N_FIVE = len(FIVE_ACTIONS)
+
+PAIR_OFFSET = N_SINGLE
+FIVE_OFFSET = N_SINGLE + N_PAIR
+passInd = N_SINGLE + N_PAIR + N_FIVE
+
+nActions = np.array([N_SINGLE, N_PAIR, 0, 0, N_FIVE, passInd])
 nAcSum = np.cumsum(nActions[:-1])
 
 with warnings.catch_warnings():
@@ -17,29 +84,34 @@ with warnings.catch_warnings():
     with open('actionIndices.pkl','rb') as f:  # Python 3: open(..., 'rb')
         twoCardIndices, threeCardIndices, fourCardIndices, fiveCardIndices, inverseTwoCardIndices, inverseThreeCardIndices, inverseFourCardIndices, inverseFiveCardIndices = pickle.load(f)
 
-passInd = nActions[-1]
+def action_index_from_cards(cards):
+    cards = tuple(sorted(int(c) for c in cards))
+    if len(cards) == 1:
+        return SINGLE_INDEX[cards[0]]
+    if len(cards) == 2:
+        return PAIR_OFFSET + PAIR_INDEX[cards]
+    if len(cards) == 5:
+        return FIVE_OFFSET + FIVE_INDEX[cards]
+    raise ValueError(f"unsupported cards length: {len(cards)}")
+
 
 def getIndex(option, nCards):
-    if nCards==0: #pass
+    if nCards == 0:
         return passInd
-    sInd = 0
-    for i in range(nCards-1):
-        sInd += nActions[i]
-    return sInd + option
+    if isinstance(option, (list, tuple, np.ndarray)):
+        return action_index_from_cards(option)
+    if nCards == 1:
+        return action_index_from_cards([int(option)])
+    raise ValueError("getIndex expects cards list for nCards>1")
 
 def getOptionNC(ind):
     if ind == passInd:
         return -1, 0
-    if ind < nAcSum[0]:
-        return ind, 1
-    elif ind < nAcSum[1]:
-        return ind - nAcSum[0], 2
-    elif ind < nAcSum[2]:
-        return ind - nAcSum[1], 3
-    elif ind < nAcSum[3]:
-        return ind - nAcSum[2], 4
-    else:
-        return ind - nAcSum[3], 5
+    if ind < PAIR_OFFSET:
+        return [SINGLE_ACTIONS[ind]], 1
+    if ind < FIVE_OFFSET:
+        return list(PAIR_ACTIONS[ind - PAIR_OFFSET]), 2
+    return list(FIVE_ACTIONS[ind - FIVE_OFFSET]), 5
 
 def fiveCardOptions(handOptions, prevHand=[],prevType=0):
     #prevType = 0 - no hand, you have control and can play any 5 card
@@ -95,8 +167,11 @@ def fiveCardOptions(handOptions, prevHand=[],prevType=0):
                                         break
                                     #import pdb; pdb.set_trace()
                                     cardInds[4] = handOptions.cards[straight[i5]].indexInHand
+                                    handBeingPlayed = handOptions.cHand[cardInds]
+                                    # Guard against illegal straight sequences.
+                                    if not gameLogic.isStraight(handBeingPlayed):
+                                        continue
                                     if prevType == 1:
-                                        handBeingPlayed = handOptions.cHand[cardInds]
                                         if not gameLogic.compareStraights(handBeingPlayed, prevHand):
                                             continue
                                     validInds[c] = fiveCardIndices[cardInds[0]][cardInds[1]][cardInds[2]][cardInds[3]][cardInds[4]]
