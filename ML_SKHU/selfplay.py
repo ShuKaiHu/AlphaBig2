@@ -1,11 +1,12 @@
 import numpy as np
 import torch
-import enumerateOptions
+
 import big2Game
+import enumerateOptions
 
 from ML_SKHU.features import (
     encode_belief_input,
-    encode_full_info_with_belief,
+    encode_policy_input,
     belief_targets,
 )
 from ML_SKHU.mcts import MCTS
@@ -14,29 +15,9 @@ from ML_SKHU.mcts import MCTS
 def _apply_action(game, action):
     if action == enumerateOptions.passInd:
         game.updateGame(-1)
-        return
-    opt, n_cards = enumerateOptions.getOptionNC(action)
-    game.updateGame(opt, n_cards)
-
-
-def _uniform_belief(game, perspective_player):
-    belief = np.zeros((52, 3), dtype=np.float32)
-    _, mask = belief_targets(game, perspective_player)
-    for i in range(52):
-        if mask[i] > 0:
-            belief[i] = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float32)
-    return belief
-
-
-def _min_play_action(game):
-    avail = game.returnAvailableActions()
-    valid = np.flatnonzero(avail == 1)
-    if valid.size == 0:
-        return enumerateOptions.passInd
-    non_pass = valid[valid != enumerateOptions.passInd]
-    if non_pass.size > 0:
-        return int(np.min(non_pass))
-    return enumerateOptions.passInd
+    else:
+        opt, n = enumerateOptions.getOptionNC(action)
+        game.updateGame(opt, n)
 
 
 def _random_action(game):
@@ -47,122 +28,166 @@ def _random_action(game):
     return int(np.random.choice(valid))
 
 
-def _policy_only_action(model, game, device="cpu"):
+def _heuristic_action(game):
     avail = game.returnAvailableActions()
     valid = np.flatnonzero(avail == 1)
     if valid.size == 0:
         return enumerateOptions.passInd
-    belief_in = encode_belief_input(game, game.playersGo)
-    action_mask = np.isfinite(
-        big2Game.convertAvailableActions(avail.astype(np.float32))
-    ).astype(np.float32)
+    non_pass = valid[valid != enumerateOptions.passInd]
+    if non_pass.size > 0:
+        return int(np.min(non_pass))
+    return int(enumerateOptions.passInd)
+
+
+def _oracle_belief_probs(game):
+    probs = np.zeros((52, 3), dtype=np.float32)
+    for abs_player, ch in [(2, 0), (3, 1), (4, 2)]:
+        for cid in game.currentHands[abs_player]:
+            probs[int(cid) - 1, ch] = 1.0
+    return probs
+
+
+def _belief_probs(game, player, belief_model, device, belief_mode="model"):
+    if belief_mode == "oracle":
+        return _oracle_belief_probs(game)
+    if belief_mode == "uniform":
+        return np.full((52, 3), 1.0 / 3.0, dtype=np.float32)
+    if belief_model is None:
+        # uniform for P2/P3/P4
+        return np.full((52, 3), 1.0 / 3.0, dtype=np.float32)
+    x = encode_belief_input(game, player)
     with torch.no_grad():
-        p_in = torch.from_numpy(belief_in).float().unsqueeze(0).to(device)
-        mask_t = torch.from_numpy(action_mask).float().unsqueeze(0).to(device)
-        logits, _ = model(p_in, mask_t)
-        action = int(torch.argmax(logits, dim=-1).item())
-    return action
+        t = torch.from_numpy(x).float().unsqueeze(0).to(device)
+        logits = belief_model(t)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+    return probs.astype(np.float32)
 
 
-def make_policy_value_fn(belief_model, policy_value_model, device="cpu"):
+def make_policy_fn(belief_model, policy_model, device="cpu", belief_mode="model"):
     def _fn(game, perspective_player):
-        if belief_model is None or policy_value_model is None:
-            logits = np.zeros((enumerateOptions.passInd + 1,), dtype=np.float32)
-            return logits, 0.0
-        belief_in = encode_belief_input(game, perspective_player)
-        with torch.no_grad():
-            b_in = torch.from_numpy(belief_in).float().unsqueeze(0).to(device)
-            b_logits = belief_model(b_in)
-            b_probs = torch.softmax(b_logits, dim=-1).cpu().numpy()[0]
-        policy_in = encode_full_info_with_belief(game, perspective_player, b_probs)
+        b_probs = _belief_probs(
+            game, perspective_player, belief_model, device=device, belief_mode=belief_mode
+        )
+        p_in = encode_policy_input(game, perspective_player, b_probs)
         avail = game.returnAvailableActions().astype(np.float32)
-        action_mask = torch.tensor(
-            np.isfinite(big2Game.convertAvailableActions(avail)).astype(np.float32)
-        ).unsqueeze(0).to(device)
+        action_mask = np.isfinite(big2Game.convertAvailableActions(avail.copy())).astype(np.float32)
         with torch.no_grad():
-            p_in = torch.from_numpy(policy_in).float().unsqueeze(0).to(device)
-            p_logits, value = policy_value_model(p_in, action_mask)
-        return p_logits.cpu().numpy()[0], float(value.view(-1).cpu().numpy()[0])
+            x = torch.from_numpy(p_in).float().unsqueeze(0).to(device)
+            m = torch.from_numpy(action_mask).float().unsqueeze(0).to(device)
+            logits = policy_model(x, m).cpu().numpy()[0]
+        return logits
+    return _fn
+
+
+def make_value_fn(belief_model, value_model, device="cpu", belief_mode="model"):
+    def _fn(game, perspective_player):
+        b_probs = _belief_probs(
+            game, perspective_player, belief_model, device=device, belief_mode=belief_mode
+        )
+        p_in = encode_policy_input(game, perspective_player, b_probs)
+        with torch.no_grad():
+            x = torch.from_numpy(p_in).float().unsqueeze(0).to(device)
+            v = value_model(x).view(-1).cpu().numpy()[0]
+        return float(v)
     return _fn
 
 
 def run_selfplay_episode(
-    belief_model=None,
-    policy_value_model=None,
-    policy_only_model=None,
+    belief_model,
+    policy_model,
+    value_model,
     n_simulations=50,
     temperature=1.0,
     device="cpu",
     policy_player=1,
-    opponent_policy="selfplay",
-    belief_min_turn=0,
-    belief_decay=0.5,
+    opponent_policy="heuristic",
+    value_scale=15.0,
+    belief_mode="model",
+    target_temperature=1.0,
+    dirichlet_alpha=0.3,
+    dirichlet_frac=0.25,
+    add_root_noise=True,
 ):
     game = big2Game.big2Game()
-    use_mcts = n_simulations and n_simulations > 0 and policy_value_model is not None
-    if use_mcts:
-        policy_value_fn = make_policy_value_fn(belief_model, policy_value_model, device=device)
-        mcts = MCTS(policy_value_fn, n_simulations=n_simulations)
+    policy_fn = make_policy_fn(
+        belief_model, policy_model, device=device, belief_mode=belief_mode
+    )
+    value_fn = make_value_fn(
+        belief_model, value_model, device=device, belief_mode=belief_mode
+    )
+    mcts = MCTS(
+        policy_fn=policy_fn,
+        value_fn=value_fn,
+        n_simulations=n_simulations,
+        dirichlet_alpha=dirichlet_alpha,
+        dirichlet_frac=dirichlet_frac,
+    )
 
     belief_data = []
     policy_data = []
-    pending_beliefs = []
 
-    turn_idx = 0
     while not game.gameOver:
         player = game.playersGo
-        belief_in = encode_belief_input(game, player)
+
+        # collect belief supervision from public states
+        b_in = encode_belief_input(game, player)
         b_target, b_mask = belief_targets(game, player)
-        if belief_model is None:
-            b_probs = _uniform_belief(game, player)
+        belief_data.append((b_in, b_target, b_mask, 1.0))
+
+        if player == policy_player:
+            b_probs = _belief_probs(
+                game, player, belief_model, device=device, belief_mode=belief_mode
+            )
+            p_in = encode_policy_input(game, player, b_probs)
+            avail = game.returnAvailableActions().astype(np.float32)
+            action_mask = np.isfinite(big2Game.convertAvailableActions(avail.copy())).astype(np.float32)
+
+            if n_simulations > 0:
+                action, visits = mcts.select_action(
+                    game,
+                    player,
+                    temperature=temperature,
+                    value_scale=value_scale,
+                    add_root_noise=add_root_noise,
+                )
+                target = np.zeros_like(visits, dtype=np.float32)
+                s = visits.sum()
+                if s > 0:
+                    t = max(float(target_temperature), 1e-8)
+                    if t <= 1e-8:
+                        target[np.argmax(visits)] = 1.0
+                    else:
+                        shaped = np.power(visits, 1.0 / t)
+                        ss = shaped.sum()
+                        if ss > 0:
+                            target = shaped / ss
+                        else:
+                            target = visits / s
+                else:
+                    target[action] = 1.0
+            else:
+                logits = policy_fn(game, player)
+                valid = np.flatnonzero(action_mask > 0)
+                if valid.size == 0:
+                    action = enumerateOptions.passInd
+                else:
+                    action = int(valid[np.argmax(logits[valid])])
+                target = np.zeros((enumerateOptions.passInd + 1,), dtype=np.float32)
+                target[action] = 1.0
+
+            policy_data.append((p_in, target, action_mask))
         else:
-            with torch.no_grad():
-                b_in = torch.from_numpy(belief_in).float().unsqueeze(0).to(device)
-                b_logits = belief_model(b_in)
-                b_probs = torch.softmax(b_logits, dim=-1).cpu().numpy()[0]
-
-        policy_in = encode_full_info_with_belief(game, player, b_probs)
-
-        action_mask = np.isfinite(big2Game.convertAvailableActions(game.returnAvailableActions().astype(np.float32))).astype(np.float32)
-
-        if player != policy_player or not use_mcts:
-            if player == policy_player and policy_only_model is not None:
-                action = _policy_only_action(policy_only_model, game, device=device)
-            elif opponent_policy == "heuristic":
-                action = _min_play_action(game)
+            if opponent_policy == "heuristic":
+                action = _heuristic_action(game)
             else:
                 action = _random_action(game)
-        else:
-            action, visits = mcts.select_action(game, player, temperature=temperature)
-            if visits.sum() > 0:
-                policy_target = visits / visits.sum()
-            else:
-                policy_target = np.zeros_like(visits)
-                policy_target[action] = 1.0
-            policy_data.append((policy_in, policy_target, player, action_mask))
-
-        # When a non-pass happens, backpropagate supervision to prior turns with decay.
-        if action != enumerateOptions.passInd and pending_beliefs:
-            reveal_turn = turn_idx - 1
-            for (p_in, p_target, p_mask, p_turn) in pending_beliefs:
-                if p_turn < belief_min_turn:
-                    continue
-                dist = max(0, reveal_turn - p_turn)
-                weight = belief_decay ** dist
-                belief_data.append((p_in, p_target, p_mask, float(weight)))
-            pending_beliefs.clear()
-
-        # Store current state for potential future supervision.
-        if turn_idx >= belief_min_turn:
-            pending_beliefs.append((belief_in, b_target, b_mask, turn_idx))
 
         _apply_action(game, action)
-        turn_idx += 1
 
-    rewards = game.rewards
+    reward = float(game.rewards[policy_player - 1])
+    value_target = np.tanh(reward / float(value_scale))
     policy_data_with_values = []
-    for policy_in, policy_target, player, action_mask in policy_data:
-        value_target = 1.0 if rewards[player - 1] > 0 else -1.0
-        policy_data_with_values.append((policy_in, policy_target, value_target, action_mask))
+    for p_in, target, action_mask in policy_data:
+        policy_data_with_values.append((p_in, target, value_target, action_mask))
 
     return belief_data, policy_data_with_values

@@ -15,3 +15,4 @@ policy_only_runs/
 value_iter_runs/
 policy_iter_runs/
 policy_selected_runs/
+*.log

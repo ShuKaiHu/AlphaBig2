@@ -1,117 +1,167 @@
 import numpy as np
+
+import big2Game
 import enumerateOptions
-
-
-def _softmax_masked(logits, mask):
-    masked = np.where(mask > 0, logits, -1e9)
-    max_val = np.max(masked)
-    exp = np.exp(masked - max_val) * mask
-    total = np.sum(exp)
-    if total <= 0:
-        denom = np.sum(mask)
-        if denom <= 0:
-            return np.zeros_like(mask, dtype=np.float32)
-        return mask / denom
-    return exp / total
 
 
 def _apply_action(game, action):
     if action == enumerateOptions.passInd:
         game.updateGame(-1)
-        return
-    opt, n_cards = enumerateOptions.getOptionNC(action)
-    game.updateGame(opt, n_cards)
+    else:
+        opt, n = enumerateOptions.getOptionNC(action)
+        game.updateGame(opt, n)
 
 
-class TreeNode:
-    def __init__(self, game, prior=0.0):
+class Node:
+    def __init__(self, game, prior=0.0, parent=None, action=None):
         self.game = game
-        self.prior = prior
+        self.prior = float(prior)
+        self.parent = parent
+        self.action = action
+        self.children = {}
         self.visit_count = 0
         self.value_sum = 0.0
-        self.children = {}
 
     @property
-    def value(self):
+    def q(self):
         if self.visit_count == 0:
             return 0.0
         return self.value_sum / self.visit_count
 
 
 class MCTS:
-    def __init__(self, policy_value_fn, n_simulations=50, c_puct=1.5):
-        self.policy_value_fn = policy_value_fn
-        self.n_simulations = n_simulations
-        self.c_puct = c_puct
+    def __init__(
+        self,
+        policy_fn,
+        value_fn,
+        n_simulations=50,
+        c_puct=1.5,
+        dirichlet_alpha=0.3,
+        dirichlet_frac=0.25,
+    ):
+        self.policy_fn = policy_fn
+        self.value_fn = value_fn
+        self.n_simulations = int(n_simulations)
+        self.c_puct = float(c_puct)
+        self.dirichlet_alpha = float(dirichlet_alpha)
+        self.dirichlet_frac = float(dirichlet_frac)
+
+    def _terminal_value(self, game, root_player, value_scale):
+        if not game.gameOver:
+            return None
+        raw = float(game.rewards[root_player - 1])
+        return np.tanh(raw / float(value_scale))
+
+    def _expand(self, node, root_player):
+        logits = self.policy_fn(node.game, root_player)
+        logits = np.array(logits, dtype=np.float32)
+
+        avail = node.game.returnAvailableActions().astype(np.float32)
+        mask = np.isfinite(big2Game.convertAvailableActions(avail.copy()))
+        if not np.any(mask):
+            return 0.0
+
+        stable = logits - np.max(logits[mask])
+        probs = np.zeros_like(logits, dtype=np.float32)
+        probs[mask] = np.exp(stable[mask])
+        s = probs[mask].sum()
+        if s > 0:
+            probs[mask] /= s
+        else:
+            probs[mask] = 1.0 / float(np.sum(mask))
+
+        for a in np.flatnonzero(mask):
+            child_game = node.game.clone()
+            _apply_action(child_game, int(a))
+            node.children[int(a)] = Node(
+                game=child_game,
+                prior=float(probs[a]),
+                parent=node,
+                action=int(a),
+            )
+        return float(self.value_fn(node.game, root_player))
 
     def _select_child(self, node):
-        best_score = -1e9
-        best_action = None
-        best_child = None
-        total_visits = max(1, node.visit_count)
-        for action, child in node.children.items():
-            prior = child.prior
-            u = self.c_puct * prior * np.sqrt(total_visits) / (1 + child.visit_count)
-            score = child.value + u
+        best_a = None
+        best_score = -1e18
+        # AlphaGo/AlphaZero PUCT:
+        # score = Q(s,a) + c_puct * P(s,a) * sqrt(sum_b N(s,b)) / (1 + N(s,a))
+        sqrt_n = np.sqrt(max(1, node.visit_count))
+        for a, c in node.children.items():
+            u = self.c_puct * c.prior * sqrt_n / (1 + c.visit_count)
+            score = c.q + u
             if score > best_score:
                 best_score = score
-                best_action = action
-                best_child = child
-        return best_action, best_child
+                best_a = a
+        return best_a, node.children[best_a]
 
-    def _expand(self, node, perspective_player):
-        logits, value = self.policy_value_fn(node.game, perspective_player)
-        avail = node.game.returnAvailableActions().astype(np.float32)
-        if np.sum(avail) <= 0:
-            child_game = node.game.clone()
-            _apply_action(child_game, enumerateOptions.passInd)
-            node.children[enumerateOptions.passInd] = TreeNode(child_game, prior=1.0)
-            return float(value)
-        priors = _softmax_masked(logits, avail)
-        for action in np.flatnonzero(avail == 1):
-            child_game = node.game.clone()
-            _apply_action(child_game, int(action))
-            node.children[int(action)] = TreeNode(child_game, prior=float(priors[action]))
-        return float(value)
+    def _add_root_dirichlet_noise(self, root):
+        if not root.children:
+            return
+        actions = list(root.children.keys())
+        if len(actions) == 1:
+            return
+        noise = np.random.dirichlet(
+            [self.dirichlet_alpha] * len(actions)
+        ).astype(np.float32)
+        eps = self.dirichlet_frac
+        for i, a in enumerate(actions):
+            child = root.children[a]
+            child.prior = (1.0 - eps) * child.prior + eps * float(noise[i])
 
-    def _terminal_value(self, game, perspective_player):
-        if not getattr(game, "gameOver", 0):
-            return None
-        reward = float(game.rewards[perspective_player - 1])
-        if reward > 0:
-            return 1.0
-        if reward < 0:
-            return -1.0
-        return 0.0
+    def select_action(
+        self,
+        game,
+        root_player,
+        temperature=1.0,
+        value_scale=50.0,
+        add_root_noise=False,
+    ):
+        root = Node(game=game.clone())
+        _ = self._expand(root, root_player)
+        if add_root_noise:
+            self._add_root_dirichlet_noise(root)
 
-    def search(self, game, perspective_player):
-        root = TreeNode(game.clone())
         for _ in range(self.n_simulations):
             node = root
             path = [node]
+
             while node.children:
                 _, node = self._select_child(node)
                 path.append(node)
-            terminal_value = self._terminal_value(node.game, perspective_player)
-            if terminal_value is None:
-                leaf_value = self._expand(node, perspective_player)
-            else:
-                leaf_value = terminal_value
-            for n in path:
-                n.visit_count += 1
-                n.value_sum += leaf_value
-        visits = np.zeros((enumerateOptions.passInd + 1,), dtype=np.float32)
-        for action, child in root.children.items():
-            visits[action] = child.visit_count
-        return visits
 
-    def select_action(self, game, perspective_player, temperature=1.0):
-        visits = self.search(game, perspective_player)
-        if np.sum(visits) <= 0:
-            return enumerateOptions.passInd, visits
-        if temperature <= 0:
-            return int(np.argmax(visits)), visits
-        probs = visits ** (1.0 / temperature)
-        probs = probs / np.sum(probs)
-        action = int(np.random.choice(len(probs), p=probs))
-        return action, probs
+            tv = self._terminal_value(node.game, root_player, value_scale=value_scale)
+            if tv is None:
+                leaf_value = self._expand(node, root_player)
+            else:
+                leaf_value = tv
+
+            for p in path:
+                p.visit_count += 1
+                p.value_sum += float(leaf_value)
+
+        visits = np.zeros((enumerateOptions.passInd + 1,), dtype=np.float32)
+        for a, c in root.children.items():
+            visits[a] = c.visit_count
+
+        valid = visits > 0
+        if not np.any(valid):
+            avail = game.returnAvailableActions()
+            valid_actions = np.flatnonzero(avail == 1)
+            if valid_actions.size == 0:
+                return enumerateOptions.passInd, visits
+            return int(valid_actions[0]), visits
+
+        if temperature <= 1e-8:
+            action = int(np.argmax(visits))
+            return action, visits
+
+        probs = np.zeros_like(visits)
+        probs[valid] = np.power(visits[valid], 1.0 / temperature)
+        probs_sum = probs.sum()
+        if probs_sum <= 0:
+            action = int(np.argmax(visits))
+            return action, visits
+        probs /= probs_sum
+        action = int(np.random.choice(np.arange(len(probs)), p=probs))
+        return action, visits

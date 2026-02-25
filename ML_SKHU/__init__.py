@@ -1,1 +1,1 @@
-"""AlphaBig2 ML2 package (belief + policy/value + MCTS)."""
+"""AlphaBig2 ML package (reset in progress: rebuilding belief/policy/value architecture)."""

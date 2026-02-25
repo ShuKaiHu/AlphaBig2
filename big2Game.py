@@ -304,7 +304,20 @@ class big2Game:
         if option == -1:
             #they pass
             cPlayer = self.playersGo
-            self.actionHistory.append({"player": cPlayer, "hand": None, "pass": True})
+            passed_snapshot = np.array(
+                [1 if self.passedThisRound[i] else 0 for i in range(1, 5)],
+                dtype=np.float32,
+            )
+            self.actionHistory.append(
+                {
+                    "player": cPlayer,
+                    "hand": None,
+                    "pass": True,
+                    "forced_skip": False,
+                    "control_break": bool(self.control == 1),
+                    "passed_snapshot": passed_snapshot,
+                }
+            )
             self.updateNeuralNetworkPass(cPlayer)
             if not self.passedThisRound[cPlayer]:
                 self.passedThisRound[cPlayer] = True
@@ -320,11 +333,30 @@ class big2Game:
                 self.playersGo = 1
             # skip players who already passed this round
             while self.control == 0 and self.passedThisRound[self.playersGo]:
+                skip_player = self.playersGo
+                passed_snapshot = np.array(
+                    [1 if self.passedThisRound[i] else 0 for i in range(1, 5)],
+                    dtype=np.float32,
+                )
+                self.actionHistory.append(
+                    {
+                        "player": skip_player,
+                        "hand": None,
+                        "pass": True,
+                        "forced_skip": True,
+                        "control_break": False,
+                        "passed_snapshot": passed_snapshot,
+                    }
+                )
                 self.playersGo += 1
                 if self.playersGo == 5:
                     self.playersGo = 1
             return
         cPlayer = self.playersGo
+        passed_snapshot = np.array(
+            [1 if self.passedThisRound[i] else 0 for i in range(1, 5)],
+            dtype=np.float32,
+        )
         self.passedThisRound[cPlayer] = False
         if isinstance(option, (list, tuple, np.ndarray)):
             handToPlay = np.array(option, dtype=int)
@@ -339,7 +371,16 @@ class big2Game:
                 handToPlay = self.currentHands[self.playersGo][enumerateOptions.inverseFiveCardIndices[option]]
         for i in handToPlay:
             self.cardsPlayed[self.playersGo-1][i-1] = 1
-        self.actionHistory.append({"player": cPlayer, "hand": handToPlay.copy(), "pass": False})
+        self.actionHistory.append(
+            {
+                "player": cPlayer,
+                "hand": handToPlay.copy(),
+                "pass": False,
+                "forced_skip": False,
+                "control_break": bool(self.control == 1),
+                "passed_snapshot": passed_snapshot,
+            }
+        )
         self.handsPlayed[self.goIndex] = handPlayed(handToPlay, self.playersGo)
         self.control = 0
         self.goIndex += 1
@@ -358,6 +399,21 @@ class big2Game:
             self.playersGo = 1
         # skip players who already passed this round
         while self.control == 0 and self.passedThisRound[self.playersGo]:
+            skip_player = self.playersGo
+            passed_snapshot = np.array(
+                [1 if self.passedThisRound[i] else 0 for i in range(1, 5)],
+                dtype=np.float32,
+            )
+            self.actionHistory.append(
+                {
+                    "player": skip_player,
+                    "hand": None,
+                    "pass": True,
+                    "forced_skip": True,
+                    "control_break": False,
+                    "passed_snapshot": passed_snapshot,
+                }
+            )
             self.playersGo += 1
             if self.playersGo == 5:
                 self.playersGo = 1
