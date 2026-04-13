@@ -16,3 +16,8 @@ value_iter_runs/
 policy_iter_runs/
 policy_selected_runs/
 *.log
+runs/
+overnight_logs/
+*.summary
+*.meta
+*.worker.sh

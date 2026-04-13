@@ -63,6 +63,8 @@ VALUE_LR=${VALUE_LR:-1e-3}
 VALUE_BUFFER_CAPACITY=${VALUE_BUFFER_CAPACITY:-100000}
 VALUE_GATE_ENABLE=${VALUE_GATE_ENABLE:-1}
 VALUE_GATE_MIN_IMPROVE=${VALUE_GATE_MIN_IMPROVE:-0.003}
+SKIP_VALUE=${SKIP_VALUE:-0}
+VALUE_TRAIN_EVERY_N_ROUNDS=${VALUE_TRAIN_EVERY_N_ROUNDS:-1}
 
 # If set, value step initializes from previous value checkpoint each round.
 VALUE_INIT_FROM_CURRENT=${VALUE_INIT_FROM_CURRENT:-1}
@@ -118,6 +120,15 @@ require_file "$BELIEF_CURRENT"
 require_file "$POLICY_CURRENT"
 require_file "$VALUE_CURRENT"
 
+if [[ "$SKIP_VALUE" != "0" && "$SKIP_VALUE" != "1" ]]; then
+  echo "invalid SKIP_VALUE=$SKIP_VALUE (must be 0 or 1)"
+  exit 1
+fi
+if ! [[ "$VALUE_TRAIN_EVERY_N_ROUNDS" =~ ^[0-9]+$ ]] || [[ "$VALUE_TRAIN_EVERY_N_ROUNDS" -lt 1 ]]; then
+  echo "invalid VALUE_TRAIN_EVERY_N_ROUNDS=$VALUE_TRAIN_EVERY_N_ROUNDS (must be integer >= 1)"
+  exit 1
+fi
+
 echo "=== Iteration Pipeline Config ==="
 echo "ROUNDS=$ROUNDS DEVICE=$DEVICE SAVE_DIR=$SAVE_DIR VALUE_SCALE=$VALUE_SCALE"
 echo "POLICY: episodes=$POLICY_EPISODES sims=$POLICY_SIMS batch=$POLICY_BATCH updates=$POLICY_UPDATES eval_games=$POLICY_EVAL_GAMES log_every=$POLICY_LOG_EVERY"
@@ -125,6 +136,7 @@ echo "POLICY GATE: min_delta_avg_reward=$POLICY_GATE_MIN_DELTA (player1)"
 echo "POLICY MCTS schedule: selfplay_temp=$SELFPLAY_TEMP_START->$SELFPLAY_TEMP_END target_temp=$TARGET_TEMP_START->$TARGET_TEMP_END noise=$DIRICHLET_FRAC_START->$DIRICHLET_FRAC_END alpha=$DIRICHLET_ALPHA"
 echo "VALUE: episodes=$VALUE_EPISODES batch=$VALUE_BATCH updates=$VALUE_UPDATES val_size=$VALUE_VAL_SIZE log_every=$VALUE_LOG_EVERY lr=$VALUE_LR buffer=$VALUE_BUFFER_CAPACITY"
 echo "VALUE GATE: enable=$VALUE_GATE_ENABLE min_improve_mae=$VALUE_GATE_MIN_IMPROVE (lower is better)"
+echo "VALUE SCHEDULE: skip_value=$SKIP_VALUE every_n_rounds=$VALUE_TRAIN_EVERY_N_ROUNDS"
 echo "CURRENT ALIASES:"
 echo "  belief_current=$BELIEF_CURRENT"
 echo "  policy_current=$POLICY_CURRENT"
@@ -215,90 +227,110 @@ PY
   cp "$VALUE_CURRENT" "$VALUE_FIXED_SNAPSHOT"
   echo "[Round $ROUND] snapshot fixed value used in policy step: $VALUE_FIXED_SNAPSHOT"
 
-  echo "=== [Round $ROUND] Value step (heuristic + full-info) ==="
-  VALUE_SAVE_TS="$VALUE_DIR/value_iter$(printf '%02d' "$ROUND")_$(timestamp).pt"
-  VALUE_INIT_ARG=""
-  if [[ "$VALUE_INIT_FROM_CURRENT" == "1" ]]; then
-    VALUE_INIT_ARG="$VALUE_CURRENT"
-  fi
-
-  VALUE_STEP_LOG=$(mktemp -t value_step_round${ROUND}.XXXXXX.log)
-  EPISODES="$VALUE_EPISODES" \
-  BATCH="$VALUE_BATCH" \
-  UPDATES="$VALUE_UPDATES" \
-  VAL_SIZE="$VALUE_VAL_SIZE" \
-  LOG_EVERY="$VALUE_LOG_EVERY" \
-  DEVICE="$DEVICE" \
-  LR="$VALUE_LR" \
-  VALUE_SCALE="$VALUE_SCALE" \
-  BUFFER_CAPACITY="$VALUE_BUFFER_CAPACITY" \
-  SAVE="$VALUE_SAVE_TS" \
-  INIT_CKPT="$VALUE_INIT_ARG" \
-  ./run_train_value_heuristic_fullinfo.sh | tee "$VALUE_STEP_LOG"
-
-  echo "[Round $ROUND] saved value checkpoint: $VALUE_SAVE_TS"
-
-  VALUE_NEW_MAE=$(grep 'val_mae=' "$VALUE_STEP_LOG" | tail -n 1 | sed -E 's/.*val_mae=([0-9.]+).*/\1/' || true)
+  VALUE_SAVE_TS="n/a"
+  VALUE_NEW_MAE=""
   VALUE_OLD_MAE=""
-  if [[ -f "$VALUE_META_FILE" ]]; then
-    VALUE_OLD_MAE=$(grep '^val_mae=' "$VALUE_META_FILE" | tail -n 1 | cut -d= -f2 || true)
-  fi
-  VALUE_GATE_STATUS="disabled"
+  VALUE_GATE_STATUS="skipped"
   VALUE_GATE_DELTA="n/a"
+  VALUE_STEP_MODE="skipped"
 
-  if [[ "$VALUE_GATE_ENABLE" == "1" ]]; then
-    if [[ -z "$VALUE_NEW_MAE" ]]; then
-      VALUE_GATE_STATUS="parse_failed"
-      echo "[Round $ROUND] VALUE GATE: PARSE FAILED (could not find val_mae), value_current remains unchanged."
-    elif [[ -z "$VALUE_OLD_MAE" ]]; then
-      cp "$VALUE_SAVE_TS" "$VALUE_CURRENT"
-      {
-        echo "val_mae=$VALUE_NEW_MAE"
-        echo "source=$VALUE_SAVE_TS"
-        echo "updated_at=$(date '+%Y-%m-%d %H:%M:%S')"
-      } > "$VALUE_META_FILE"
-      VALUE_GATE_STATUS="accepted_no_baseline"
-      echo "[Round $ROUND] VALUE GATE: ACCEPTED (no baseline; new val_mae=$VALUE_NEW_MAE)"
-    else
-      VALUE_GATE_DELTA=$(python3 - <<PY
-old=float("$VALUE_OLD_MAE")
-new=float("$VALUE_NEW_MAE")
-print(f"{old-new:.6f}")
-PY
-)
-      VALUE_GATE_PASS=$(python3 - <<PY
-old=float("$VALUE_OLD_MAE")
-new=float("$VALUE_NEW_MAE")
-t=float("$VALUE_GATE_MIN_IMPROVE")
-print("1" if (new <= old - t) else "0")
-PY
-)
-      if [[ "$VALUE_GATE_PASS" == "1" ]]; then
+  RUN_VALUE_STEP=1
+  if [[ "$SKIP_VALUE" == "1" ]]; then
+    RUN_VALUE_STEP=0
+    VALUE_STEP_MODE="skipped_by_flag"
+  elif (( ROUND % VALUE_TRAIN_EVERY_N_ROUNDS != 0 )); then
+    RUN_VALUE_STEP=0
+    VALUE_STEP_MODE="scheduled_skip"
+  fi
+
+  if [[ "$RUN_VALUE_STEP" == "1" ]]; then
+    echo "=== [Round $ROUND] Value step (heuristic + full-info) ==="
+    VALUE_STEP_MODE="trained"
+    VALUE_SAVE_TS="$VALUE_DIR/value_iter$(printf '%02d' "$ROUND")_$(timestamp).pt"
+    VALUE_INIT_ARG=""
+    if [[ "$VALUE_INIT_FROM_CURRENT" == "1" ]]; then
+      VALUE_INIT_ARG="$VALUE_CURRENT"
+    fi
+
+    VALUE_STEP_LOG=$(mktemp -t value_step_round${ROUND}.XXXXXX.log)
+    EPISODES="$VALUE_EPISODES" \
+    BATCH="$VALUE_BATCH" \
+    UPDATES="$VALUE_UPDATES" \
+    VAL_SIZE="$VALUE_VAL_SIZE" \
+    LOG_EVERY="$VALUE_LOG_EVERY" \
+    DEVICE="$DEVICE" \
+    LR="$VALUE_LR" \
+    VALUE_SCALE="$VALUE_SCALE" \
+    BUFFER_CAPACITY="$VALUE_BUFFER_CAPACITY" \
+    SAVE="$VALUE_SAVE_TS" \
+    INIT_CKPT="$VALUE_INIT_ARG" \
+    ./run_train_value_heuristic_fullinfo.sh | tee "$VALUE_STEP_LOG"
+
+    echo "[Round $ROUND] saved value checkpoint: $VALUE_SAVE_TS"
+
+    VALUE_NEW_MAE=$(grep 'val_mae=' "$VALUE_STEP_LOG" | tail -n 1 | sed -E 's/.*val_mae=([0-9.]+).*/\1/' || true)
+    if [[ -f "$VALUE_META_FILE" ]]; then
+      VALUE_OLD_MAE=$(grep '^val_mae=' "$VALUE_META_FILE" | tail -n 1 | cut -d= -f2 || true)
+    fi
+    VALUE_GATE_STATUS="disabled"
+    VALUE_GATE_DELTA="n/a"
+
+    if [[ "$VALUE_GATE_ENABLE" == "1" ]]; then
+      if [[ -z "$VALUE_NEW_MAE" ]]; then
+        VALUE_GATE_STATUS="parse_failed"
+        echo "[Round $ROUND] VALUE GATE: PARSE FAILED (could not find val_mae), value_current remains unchanged."
+      elif [[ -z "$VALUE_OLD_MAE" ]]; then
         cp "$VALUE_SAVE_TS" "$VALUE_CURRENT"
         {
           echo "val_mae=$VALUE_NEW_MAE"
           echo "source=$VALUE_SAVE_TS"
           echo "updated_at=$(date '+%Y-%m-%d %H:%M:%S')"
         } > "$VALUE_META_FILE"
-        VALUE_GATE_STATUS="accepted"
-        echo "[Round $ROUND] VALUE GATE: ACCEPTED (old_mae=$VALUE_OLD_MAE new_mae=$VALUE_NEW_MAE improve=$VALUE_GATE_DELTA)"
+        VALUE_GATE_STATUS="accepted_no_baseline"
+        echo "[Round $ROUND] VALUE GATE: ACCEPTED (no baseline; new val_mae=$VALUE_NEW_MAE)"
       else
-        VALUE_GATE_STATUS="rejected"
-        echo "[Round $ROUND] VALUE GATE: REJECTED (old_mae=$VALUE_OLD_MAE new_mae=$VALUE_NEW_MAE improve=$VALUE_GATE_DELTA)"
-        echo "[Round $ROUND] value_current remains unchanged: $VALUE_CURRENT"
+        VALUE_GATE_DELTA=$(python3 - <<PY
+old=float("$VALUE_OLD_MAE")
+new=float("$VALUE_NEW_MAE")
+print(f"{old-new:.6f}")
+PY
+)
+        VALUE_GATE_PASS=$(python3 - <<PY
+old=float("$VALUE_OLD_MAE")
+new=float("$VALUE_NEW_MAE")
+t=float("$VALUE_GATE_MIN_IMPROVE")
+print("1" if (new <= old - t) else "0")
+PY
+)
+        if [[ "$VALUE_GATE_PASS" == "1" ]]; then
+          cp "$VALUE_SAVE_TS" "$VALUE_CURRENT"
+          {
+            echo "val_mae=$VALUE_NEW_MAE"
+            echo "source=$VALUE_SAVE_TS"
+            echo "updated_at=$(date '+%Y-%m-%d %H:%M:%S')"
+          } > "$VALUE_META_FILE"
+          VALUE_GATE_STATUS="accepted"
+          echo "[Round $ROUND] VALUE GATE: ACCEPTED (old_mae=$VALUE_OLD_MAE new_mae=$VALUE_NEW_MAE improve=$VALUE_GATE_DELTA)"
+        else
+          VALUE_GATE_STATUS="rejected"
+          echo "[Round $ROUND] VALUE GATE: REJECTED (old_mae=$VALUE_OLD_MAE new_mae=$VALUE_NEW_MAE improve=$VALUE_GATE_DELTA)"
+          echo "[Round $ROUND] value_current remains unchanged: $VALUE_CURRENT"
+        fi
       fi
+    else
+      cp "$VALUE_SAVE_TS" "$VALUE_CURRENT"
+      if [[ -n "$VALUE_NEW_MAE" ]]; then
+        {
+          echo "val_mae=$VALUE_NEW_MAE"
+          echo "source=$VALUE_SAVE_TS"
+          echo "updated_at=$(date '+%Y-%m-%d %H:%M:%S')"
+        } > "$VALUE_META_FILE"
+      fi
+      VALUE_GATE_STATUS="disabled_promoted"
+      echo "[Round $ROUND] VALUE GATE: DISABLED (promoted value checkpoint to current)"
     fi
   else
-    cp "$VALUE_SAVE_TS" "$VALUE_CURRENT"
-    if [[ -n "$VALUE_NEW_MAE" ]]; then
-      {
-        echo "val_mae=$VALUE_NEW_MAE"
-        echo "source=$VALUE_SAVE_TS"
-        echo "updated_at=$(date '+%Y-%m-%d %H:%M:%S')"
-      } > "$VALUE_META_FILE"
-    fi
-    VALUE_GATE_STATUS="disabled_promoted"
-    echo "[Round $ROUND] VALUE GATE: DISABLED (promoted value checkpoint to current)"
+    echo "=== [Round $ROUND] Value step: SKIPPED (mode=$VALUE_STEP_MODE) ==="
   fi
 
   {
@@ -308,10 +340,11 @@ PY
     echo "- policy gate: $POLICY_GATE_STATUS"
     echo "- policy avg_reward before/after: ${POLICY_BEFORE_REWARD:-n/a} -> ${POLICY_AFTER_REWARD:-n/a} (delta=${POLICY_GATE_DELTA})"
     echo "- value checkpoint: \`$VALUE_SAVE_TS\`"
+    echo "- value step mode: $VALUE_STEP_MODE"
     echo "- value gate: $VALUE_GATE_STATUS"
     echo "- value val_mae old/new: ${VALUE_OLD_MAE:-n/a} -> ${VALUE_NEW_MAE:-n/a} (improve=${VALUE_GATE_DELTA})"
     echo "- policy training: episodes=$POLICY_EPISODES sims=$POLICY_SIMS updates=$POLICY_UPDATES eval_games=$POLICY_EVAL_GAMES"
-    echo "- value training: episodes=$VALUE_EPISODES updates=$VALUE_UPDATES"
+    echo "- value training: episodes=$VALUE_EPISODES updates=$VALUE_UPDATES every_n_rounds=$VALUE_TRAIN_EVERY_N_ROUNDS skip_value=$SKIP_VALUE"
   } >> "$NOTES_FILE"
 
 done
