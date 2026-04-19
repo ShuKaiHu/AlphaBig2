@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")" || exit 1
+source "$(pwd)/scripts/ensure_repo_venv.sh"
+
 # Train policy+value only (belief frozen, oracle/full-info input):
 # 1) eval before
 # 2) train

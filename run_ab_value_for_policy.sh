@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")" || exit 1
+source "$(pwd)/scripts/ensure_repo_venv.sh"
+
 # A/B test multiple value checkpoints as the fixed value teacher for policy-only training.
 # It resets policy.pt to the same baseline before each run for fair comparison.
 
@@ -70,4 +73,3 @@ echo "Done. Compare these logs:"
 echo "  ab_policy_with_value_current.log"
 echo "  ab_policy_with_value_best_val_mae.log"
 echo "  ab_policy_with_value_best_endgame_mae.log"
-

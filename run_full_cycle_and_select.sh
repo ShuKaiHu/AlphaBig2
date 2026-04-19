@@ -3,12 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")" || exit 1
 
-if [[ ! -f .venv/bin/activate ]]; then
-  echo "Missing virtualenv: .venv/bin/activate"
-  exit 1
-fi
-
-source .venv/bin/activate
+source "$(pwd)/scripts/ensure_repo_venv.sh"
 
 DEVICE=${DEVICE:-cpu}
 ROUNDS=${ROUNDS:-10}

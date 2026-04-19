@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")" || exit 1
+source "$(pwd)/scripts/ensure_repo_venv.sh"
+
 # Train POLICY only with fixed BELIEF (frozen) + fixed VALUE (frozen)
 # Uses oracle/full-info belief input for phase2-style training.
 # Flow: eval before -> train(policy only) -> eval after

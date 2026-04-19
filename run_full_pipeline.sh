@@ -5,8 +5,7 @@
 set -e  # Exit on error
 
 cd "$(dirname "$0")" || exit
-
-source .venv/bin/activate
+source "$(pwd)/scripts/ensure_repo_venv.sh"
 
 echo "=========================================="
 echo "AlphaBig2 Training & Evaluation Pipeline"

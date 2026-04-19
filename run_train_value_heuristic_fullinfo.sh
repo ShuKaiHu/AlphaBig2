@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")" || exit 1
+source "$(pwd)/scripts/ensure_repo_venv.sh"
+
 EPISODES=${EPISODES:-1000}
 BATCH=${BATCH:-64}
 UPDATES=${UPDATES:-2}

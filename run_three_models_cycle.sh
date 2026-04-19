@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")" || exit 1
+source "$(pwd)/scripts/ensure_repo_venv.sh"
+
 # Simple schedule:
 # 1) Belief-only warmup
 # 2) Policy+Value training (belief frozen)

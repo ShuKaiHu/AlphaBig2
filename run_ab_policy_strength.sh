@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")" || exit 1
+source "$(pwd)/scripts/ensure_repo_venv.sh"
+
 # A/B test policy training strength by sweeping EPISODES / UPDATES.
 # Uses a fixed value checkpoint and resets policy.pt to the same baseline before each run.
 
@@ -62,4 +65,3 @@ echo "  ab_policy_strength_ep100_upd2.log"
 echo "  ab_policy_strength_ep200_upd2.log"
 echo "  ab_policy_strength_ep200_upd1.log"
 echo "  ab_policy_strength_ep400_upd2.log"
-
