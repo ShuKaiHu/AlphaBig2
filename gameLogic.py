@@ -161,9 +161,6 @@ def validatePlayedHand(hand, prevHand, control):
         return 0
     if control==1:
         return 1 #can play any real hand with control
-    if prevHand.size == 1 and prevHand[0] == 52:
-        return 0
-
     hand.sort()
     prevHand.sort()
 

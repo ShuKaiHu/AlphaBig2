@@ -1,0 +1,252 @@
+"""
+Main training loop for AlphaBig2.
+
+Usage:
+    python -m engine.trainer
+    python -m engine.trainer --iterations 500 --self-play 100 --sims 50
+"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import argparse
+import copy
+import time
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from engine.model import Big2Net
+from engine.self_play import run_episode, make_pool_opponent
+from engine.replay_buffer import ReplayBuffer
+from engine.evaluator import evaluate_vs_heuristic
+
+CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
+
+
+def train(
+    n_iterations: int = 1000,
+    self_play_episodes: int = 200,
+    train_steps: int = 500,
+    batch_size: int = 256,
+    lr: float = 2e-4,
+    n_simulations: int = 50,
+    replay_capacity: int = 50_000,
+    pool_update_freq: int = 50,
+    eval_freq: int = 5,
+    eval_games: int = 200,
+    checkpoint_dir: str = CHECKPOINT_DIR,
+    resume: bool = True,
+    bc_warmup_iters: int = 50,
+    bc_mix_ratio: float = 0.0,  # fraction of episodes always using BC (even after warmup)
+):
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    latest_path = os.path.join(checkpoint_dir, "latest.pt")
+    best_path = os.path.join(checkpoint_dir, "best.pt")
+
+    model = Big2Net()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_iterations, eta_min=lr * 0.1
+    )
+    buffer = ReplayBuffer(replay_capacity)
+    opponent_pool: list = []
+    best_avg_score = -float("inf")
+    start_iter = 1
+
+    if resume and os.path.exists(latest_path):
+        ckpt = torch.load(latest_path, map_location="cpu")
+        missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+        if missing:
+            print(f"New weights (randomly init): {missing}")
+        if unexpected:
+            print(f"Ignored old keys: {unexpected}")
+        try:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        except ValueError:
+            print("Optimizer state incompatible (architecture changed), starting fresh optimizer.")
+        best_avg_score = ckpt.get("best_avg_score", -float("inf"))
+        start_iter = ckpt.get("iteration", 0) + 1
+        print(f"Resumed from iteration {start_iter - 1}, best_avg_score={best_avg_score:.3f}")
+        # Restore scheduler to correct position so LR doesn't restart from peak
+        for _ in range(start_iter - 1):
+            scheduler.step()
+
+    for iteration in range(start_iter, n_iterations + 1):
+        t0 = time.time()
+        temperature = max(0.6, 1.0 - iteration / 300.0)
+
+        # ── Self-play ─────────────────────────────────────────────────────────
+        model.eval()
+        ep_rewards = []
+        bc_active = (iteration <= bc_warmup_iters)
+        n_bc_mix = int(self_play_episodes * bc_mix_ratio) if not bc_active else 0
+        for ep_idx in range(self_play_episodes):
+            if opponent_pool and np.random.rand() < 0.5:
+                opp = make_pool_opponent(np.random.choice(opponent_pool))
+            else:
+                opp = "heuristic"
+            use_bc = bc_active or (ep_idx < n_bc_mix)
+            data, reward = run_episode(
+                model,
+                n_simulations=n_simulations,
+                temperature=temperature,
+                opponent=opp,
+                bc_mode=use_bc,
+            )
+            buffer.add_episode(data)
+            ep_rewards.append(reward)
+
+        avg_reward = float(np.mean(ep_rewards))
+
+        # ── Train ─────────────────────────────────────────────────────────────
+        if len(buffer) < batch_size:
+            print(
+                f"[iter {iteration:4d}] buffer too small ({len(buffer)}), skipping train"
+            )
+            continue
+
+        model.train()
+        p_losses, v_losses, b_losses, entropies = [], [], [], []
+        for _ in range(train_steps):
+            statics, histories, valids, pol_tgts, val_tgts, bel_tgts = buffer.sample(batch_size)
+            sf = torch.FloatTensor(statics)
+            hs = torch.FloatTensor(histories)
+            vm = torch.FloatTensor(valids)
+            pt = torch.FloatTensor(pol_tgts)
+            vt = torch.FloatTensor(val_tgts).unsqueeze(1)
+            bt = torch.FloatTensor(bel_tgts)
+
+            logits, value, belief_logits = model(sf, hs, vm)
+
+            # Policy: cross-entropy vs label-smoothed MCTS visit distribution.
+            # Label smoothing (eps=0.10) prevents over-confident targets when
+            # low-sim MCTS concentrates 90%+ of visits on one action.
+            # pt_smooth = 0.9 * pt + 0.1 * uniform_over_valid_actions
+            log_probs = F.log_softmax(logits, dim=-1)
+            valid_count = vm.sum(dim=-1, keepdim=True).clamp(min=1.0)
+            pt_smooth = pt * 0.9 + 0.1 * vm / valid_count
+            p_loss = -(pt_smooth * log_probs).sum(dim=-1).mean()
+
+            # Entropy bonus: prevent policy collapse
+            # probs over LEGAL actions only (vm mask); encourages exploration
+            probs = torch.exp(log_probs) * vm
+            probs_sum = probs.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+            probs_norm = probs / probs_sum
+            entropy = -(probs_norm * (probs_norm + 1e-8).log()).sum(dim=-1).mean()
+
+            # Value: MSE vs TD(λ) targets
+            v_loss = F.mse_loss(value, vt)
+
+            # Belief: BCE vs oracle opponent hands (auxiliary, weight=0.1)
+            b_loss = F.binary_cross_entropy_with_logits(belief_logits, bt)
+
+            loss = p_loss + v_loss + 0.1 * b_loss - 0.05 * entropy
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            p_losses.append(p_loss.item())
+            v_losses.append(v_loss.item())
+            b_losses.append(b_loss.item())
+            entropies.append(entropy.item())
+
+        scheduler.step()
+
+        # ── Evaluate ──────────────────────────────────────────────────────────
+        mode_label = 'BC' if bc_active else (f'MCTS+{int(bc_mix_ratio*100)}%BC' if bc_mix_ratio > 0 else 'MCTS')
+        log_parts = [
+            f"[iter {iteration:4d}]",
+            mode_label,
+            f"reward={avg_reward:+.2f}",
+            f"p_loss={np.mean(p_losses):.4f}",
+            f"v_loss={np.mean(v_losses):.4f}",
+            f"b_loss={np.mean(b_losses):.4f}",
+            f"ent={np.mean(entropies):.3f}",
+            f"T={temperature:.2f}",
+            f"buf={len(buffer)}",
+        ]
+
+        if iteration % eval_freq == 0:
+            model.eval()
+            win_rate, avg_score = evaluate_vs_heuristic(model, n_games=eval_games)
+            log_parts += [
+                f"| avg_score={avg_score:+.2f}",
+                f"win_rate={win_rate:.3f}",
+            ]
+            if avg_score > best_avg_score:
+                best_avg_score = avg_score
+                torch.save(model.state_dict(), best_path)
+                log_parts.append("✓ best")
+
+        elapsed = time.time() - t0
+        log_parts.append(f"[{elapsed:.0f}s]")
+        print(" ".join(log_parts))
+
+        # ── Opponent pool update ───────────────────────────────────────────────
+        if iteration % pool_update_freq == 0:
+            snapshot = Big2Net()
+            snapshot.load_state_dict(copy.deepcopy(model.state_dict()))
+            snapshot.eval()
+            opponent_pool.append(snapshot)
+            if len(opponent_pool) > 20:
+                opponent_pool.pop(0)
+            print(f"  Pool updated: {len(opponent_pool)} models")
+
+        # ── Save checkpoint ───────────────────────────────────────────────────
+        torch.save(
+            {
+                "iteration": iteration,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "best_avg_score": best_avg_score,
+            },
+            latest_path,
+        )
+
+    print(f"\nTraining complete. Best avg_score: {best_avg_score:.3f}")
+    print(f"Best model: {best_path}")
+    return model
+
+
+def _parse_args():
+    p = argparse.ArgumentParser(description="Train AlphaBig2")
+    p.add_argument("--iterations", type=int, default=1000)
+    p.add_argument("--self-play", type=int, default=200, dest="self_play_episodes")
+    p.add_argument("--train-steps", type=int, default=500)
+    p.add_argument("--batch-size", type=int, default=256)
+    p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--sims", type=int, default=50, dest="n_simulations")
+    p.add_argument("--eval-freq", type=int, default=5)
+    p.add_argument("--eval-games", type=int, default=200)
+    p.add_argument("--replay-capacity", type=int, default=50_000, dest="replay_capacity")
+    p.add_argument("--no-resume", action="store_false", dest="resume")
+    p.add_argument("--bc-warmup", type=int, default=50, dest="bc_warmup_iters",
+                   help="Number of BC warmup iterations before switching to MCTS self-play")
+    p.add_argument("--bc-mix", type=float, default=0.0, dest="bc_mix_ratio",
+                   help="Fraction of episodes always using BC after warmup (0.0-1.0)")
+    p.add_argument("--torch-threads", type=int, default=3,
+                   help="PyTorch intra-op threads (3 = ~30%% of 10-core CPU)")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    # 限制 PyTorch 平行度（雙保險：cpulimit 負責系統層，這裡負責 PyTorch 層）
+    torch.set_num_threads(args.torch_threads)
+    torch.set_num_interop_threads(args.torch_threads)
+    print(f"PyTorch threads: {args.torch_threads} (intra + interop)")
+    train(
+        n_iterations=args.iterations,
+        self_play_episodes=args.self_play_episodes,
+        train_steps=args.train_steps,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        n_simulations=args.n_simulations,
+        replay_capacity=args.replay_capacity,
+        eval_freq=args.eval_freq,
+        eval_games=args.eval_games,
+        resume=args.resume,
+        bc_warmup_iters=args.bc_warmup_iters,
+        bc_mix_ratio=args.bc_mix_ratio,
+    )

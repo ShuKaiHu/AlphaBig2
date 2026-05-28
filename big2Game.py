@@ -522,14 +522,11 @@ class big2Game:
         if self.control == 0:
             prevHand = self.handsPlayed[self.goIndex-1].hand
             nCardsToBeat = len(prevHand)
-            prev_is_spade_two = (nCardsToBeat == 1 and prevHand[0] == 52)
             if self.passedThisRound[self.playersGo]:
-                return availableActions
-            if prev_is_spade_two:
                 return availableActions
 
             handOptions = gameLogic.handsAvailable(currHand)
-                
+
             if nCardsToBeat == 1:
                 options = enumerateOptions.oneCardOptions(currHand, prevHand,1)
             elif nCardsToBeat == 2:
@@ -545,7 +542,7 @@ class big2Game:
                     options = enumerateOptions.fiveCardOptions(handOptions, prevHand, 1)
             else:
                 options = -1
-                    
+
             if isinstance(options, int): #no options - must pass
                 options = np.array([], dtype=int)
 
@@ -561,31 +558,32 @@ class big2Game:
                 index = enumerateOptions.action_index_from_cards(cards)
                 availableActions[index] = 1
 
-            if not prev_is_spade_two:
-                prev_is_straight_flush = (nCardsToBeat == 5 and gameLogic.isStraightFlush(prevHand))
-                prev_is_four_kind = (nCardsToBeat == 5 and gameLogic.isFourOfAKind(prevHand))
+            # Straight flush and four-of-a-kind can beat any hand type,
+            # including a single card (e.g. spade 2).
+            prev_is_straight_flush = (nCardsToBeat == 5 and gameLogic.isStraightFlush(prevHand))
+            prev_is_four_kind = (nCardsToBeat == 5 and gameLogic.isFourOfAKind(prevHand))
 
-                if not prev_is_straight_flush:
-                    four_kind_options = enumerateOptions.fourOfAKindOnlyOptions(
-                        handOptions, prevHand if prev_is_four_kind else None
-                    )
-                    if not isinstance(four_kind_options, int):
-                        for option in four_kind_options:
-                            card_inds = enumerateOptions.inverseFiveCardIndices[option]
-                            cards = currHand[card_inds]
-                            index = enumerateOptions.action_index_from_cards(cards)
-                            availableActions[index] = 1
-
-                straight_flush_options = enumerateOptions.straightFlushOnlyOptions(
-                    handOptions, prevHand if prev_is_straight_flush else None
+            if not prev_is_straight_flush:
+                four_kind_options = enumerateOptions.fourOfAKindOnlyOptions(
+                    handOptions, prevHand if prev_is_four_kind else None
                 )
-                if not isinstance(straight_flush_options, int):
-                    for option in straight_flush_options:
+                if not isinstance(four_kind_options, int):
+                    for option in four_kind_options:
                         card_inds = enumerateOptions.inverseFiveCardIndices[option]
                         cards = currHand[card_inds]
                         index = enumerateOptions.action_index_from_cards(cards)
                         availableActions[index] = 1
-                
+
+            straight_flush_options = enumerateOptions.straightFlushOnlyOptions(
+                handOptions, prevHand if prev_is_straight_flush else None
+            )
+            if not isinstance(straight_flush_options, int):
+                for option in straight_flush_options:
+                    card_inds = enumerateOptions.inverseFiveCardIndices[option]
+                    cards = currHand[card_inds]
+                    index = enumerateOptions.action_index_from_cards(cards)
+                    availableActions[index] = 1
+
             return availableActions
         
         

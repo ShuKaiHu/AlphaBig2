@@ -1,0 +1,181 @@
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import numpy as np
+import enumerateOptions
+from engine.env import Big2Env, PASS_IDX
+from engine.features import encode_static, encode_history_steps
+from engine.mcts import MCTS
+
+REWARD_SCALE = 13.0
+LAMBDA_TD = 0.9
+
+
+def _heuristic_action(env: Big2Env) -> int:
+    """Smarter heuristic: prefer combos over singles, play minimum winning hand.
+
+    When leading (control=1):
+      5-card combo (random choice) > pair (lowest) > single (lowest)
+    When following (control=0):
+      minimum valid combo that beats the table (smallest winning action index)
+      pass if nothing beats the table
+    """
+    import enumerateOptions as _eo
+    valid_mask = env.get_valid_actions()
+    valid = np.flatnonzero(valid_mask)
+    non_pass = valid[valid != PASS_IDX]
+    if len(non_pass) == 0:
+        return PASS_IDX
+
+    game = env.game
+    if game.control == 1:
+        # Leading: split by combo size
+        five_card = [a for a in non_pass if a >= _eo.FIVE_OFFSET]
+        pairs      = [a for a in non_pass if _eo.PAIR_OFFSET <= a < _eo.FIVE_OFFSET]
+        singles    = [a for a in non_pass if a < _eo.PAIR_OFFSET]
+        if five_card:
+            return int(np.random.choice(five_card))   # random 5-card combo
+        if pairs:
+            return int(pairs[0])                       # lowest pair
+        return int(singles[0])                         # lowest single
+    else:
+        # Following: play minimum winning hand (lowest index that beats table)
+        return int(non_pass[0])
+
+
+def _model_action(model, env: Big2Env) -> int:
+    """Greedy policy from model (no MCTS) for opponent pool agents."""
+    game = env.game
+    player = env.current_player
+    static = encode_static(game, player)
+    history = encode_history_steps(game)
+    valid = env.get_valid_actions()
+    probs, _ = model.predict(static, history, valid)
+    masked = probs * valid
+    total = masked.sum()
+    if total == 0:
+        return PASS_IDX
+    return int(np.argmax(masked))
+
+
+def run_episode(
+    model,
+    n_simulations: int = 50,
+    temperature: float = 1.0,
+    learner_player: int = 1,
+    opponent="heuristic",
+    bc_mode: bool = False,
+) -> tuple:
+    """
+    Run one self-play episode.
+
+    `opponent` can be:
+      - "heuristic": always play lowest valid card
+      - "random":    uniform random valid action
+      - callable:    called with (env) → action int (e.g. a pool model wrapper)
+
+    `bc_mode`: if True, use heuristic for learner's ACTION and one-hot of
+               that action as the policy target (behavioral cloning).
+               This bootstraps the model before MCTS self-play.
+
+    Returns:
+        data: list of (static, history, valid_mask, policy_target, value_target)
+              for the learner_player's turns.
+        terminal_reward: float — raw terminal reward for learner_player.
+    """
+    env = Big2Env()
+    env.reset()
+    mcts = None if bc_mode else MCTS(model, n_simulations=n_simulations)
+
+    episode_steps = []  # accumulate learner steps before back-filling values
+
+    while not env.done:
+        player = env.current_player
+        game = env.game
+
+        if player == learner_player:
+            static = encode_static(game, player)
+            history = encode_history_steps(game)
+            valid = env.get_valid_actions()
+
+            if bc_mode:
+                # Behavioral cloning: use heuristic action as both action + target
+                action = _heuristic_action(env)
+                visits = np.zeros(env.ACTION_SIZE, dtype=np.float32)
+                visits[action] = 1.0
+
+            else:
+                action, visits = mcts.run(env, temperature=temperature)
+
+            total_v = visits.sum()
+            valid_sum = valid.sum()
+            if total_v > 0:
+                policy_target = visits / total_v
+            elif valid_sum > 0:
+                policy_target = valid / valid_sum
+            else:
+                policy_target = np.ones_like(valid) / len(valid)
+
+            # Belief oracle target: which cards do the 3 opponents hold right now
+            # learner_player=1 → opponents are players 2, 3, 4
+            belief_target = np.zeros(52 * 3, dtype=np.float32)
+            for opp_idx, opp_p in enumerate([p for p in range(1, 5) if p != learner_player]):
+                for card in game.currentHands[opp_p]:
+                    c = int(card)
+                    if 1 <= c <= 52:
+                        belief_target[opp_idx * 52 + c - 1] = 1.0
+
+            episode_steps.append({
+                "static": static.astype(np.float32),
+                "history": history.astype(np.float32),
+                "valid": valid.astype(np.float32),
+                "policy_target": policy_target.astype(np.float32),
+                "belief_target": belief_target,
+            })
+        else:
+            if opponent == "heuristic":
+                action = _heuristic_action(env)
+            elif opponent == "random":
+                action = env.random_action()
+            elif callable(opponent):
+                action = opponent(env)
+            else:
+                action = _heuristic_action(env)
+
+        rewards, done = env.step(action)
+
+        if done:
+            terminal_reward = float(rewards[learner_player - 1])
+            env.reset()
+            break
+
+    # ── TD(λ) value back-fill ──────────────────────────────────────────────
+    n = len(episode_steps)
+    value_targets = np.zeros(n, dtype=np.float32)
+    if n > 0:
+        normalized = float(np.tanh(terminal_reward / REWARD_SCALE))
+        value_targets[-1] = normalized
+        for t in range(n - 2, -1, -1):
+            value_targets[t] = (
+                LAMBDA_TD * value_targets[t + 1] + (1 - LAMBDA_TD) * normalized
+            )
+
+    data = [
+        (
+            step["static"],
+            step["history"],
+            step["valid"],
+            step["policy_target"],
+            np.float32(value_targets[i]),
+            step["belief_target"],
+        )
+        for i, step in enumerate(episode_steps)
+    ]
+    return data, terminal_reward
+
+
+def make_pool_opponent(pool_model):
+    """Wrap a frozen pool model as an opponent callable for run_episode."""
+    def _act(env: Big2Env) -> int:
+        return _model_action(pool_model, env)
+    return _act
