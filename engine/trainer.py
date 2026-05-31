@@ -38,6 +38,11 @@ def train(
     resume: bool = True,
     bc_warmup_iters: int = 50,
     bc_mix_ratio: float = 0.0,  # fraction of episodes always using BC (even after warmup)
+    entropy_coef: float = 0.0,  # entropy BONUS weight. 0 = off (AlphaZero-style:
+                                # rely on Dirichlet noise, not an entropy bonus).
+                                # A positive bonus drove entropy runaway here.
+    policy_target_temp: float = 0.7,  # <1 sharpens MCTS visit targets to counter
+                                      # the high variance of few-sim visit counts.
 ):
     os.makedirs(checkpoint_dir, exist_ok=True)
     latest_path = os.path.join(checkpoint_dir, "latest.pt")
@@ -130,13 +135,17 @@ def train(
 
             logits, value, belief_logits = model(sf, hs, vm)
 
-            # Policy: cross-entropy vs label-smoothed MCTS visit distribution.
-            # Label smoothing (eps=0.10) prevents over-confident targets when
-            # low-sim MCTS concentrates 90%+ of visits on one action.
-            # pt_smooth = 0.9 * pt + 0.1 * uniform_over_valid_actions
+            # Policy: cross-entropy vs MCTS visit distribution.
+            # 1) Sharpen the target (temp<1) to counter the high variance of
+            #    few-sim visit counts spread over a large action space —
+            #    without this the targets are too diffuse and entropy drifts up.
+            # 2) Light label smoothing (eps=0.05) for stability.
             log_probs = F.log_softmax(logits, dim=-1)
+            if policy_target_temp != 1.0:
+                pt_sharp = pt.clamp(min=0) ** (1.0 / policy_target_temp)
+                pt = pt_sharp / pt_sharp.sum(dim=-1, keepdim=True).clamp(min=1e-8)
             valid_count = vm.sum(dim=-1, keepdim=True).clamp(min=1.0)
-            pt_smooth = pt * 0.9 + 0.1 * vm / valid_count
+            pt_smooth = pt * 0.95 + 0.05 * vm / valid_count
             p_loss = -(pt_smooth * log_probs).sum(dim=-1).mean()
 
             # Entropy bonus: prevent policy collapse
@@ -152,7 +161,10 @@ def train(
             # Belief: BCE vs oracle opponent hands (auxiliary, weight=0.1)
             b_loss = F.binary_cross_entropy_with_logits(belief_logits, bt)
 
-            loss = p_loss + v_loss + 0.1 * b_loss - 0.05 * entropy
+            # entropy_coef defaults to 0 (no bonus): a positive bonus actively
+            # inflated entropy here and caused runaway. Exploration comes from
+            # MCTS root Dirichlet noise instead.
+            loss = p_loss + v_loss + 0.1 * b_loss - entropy_coef * entropy
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -232,6 +244,10 @@ def _parse_args():
                    help="Number of BC warmup iterations before switching to MCTS self-play")
     p.add_argument("--bc-mix", type=float, default=0.0, dest="bc_mix_ratio",
                    help="Fraction of episodes always using BC after warmup (0.0-1.0)")
+    p.add_argument("--entropy-coef", type=float, default=0.0, dest="entropy_coef",
+                   help="Entropy BONUS weight (0=off; positive values can cause runaway)")
+    p.add_argument("--policy-temp", type=float, default=0.7, dest="policy_target_temp",
+                   help="Temperature (<1 sharpens) applied to MCTS visit policy targets")
     p.add_argument("--torch-threads", type=int, default=3,
                    help="PyTorch intra-op threads (3 = ~30%% of 10-core CPU)")
     return p.parse_args()
@@ -256,4 +272,6 @@ if __name__ == "__main__":
         resume=args.resume,
         bc_warmup_iters=args.bc_warmup_iters,
         bc_mix_ratio=args.bc_mix_ratio,
+        entropy_coef=args.entropy_coef,
+        policy_target_temp=args.policy_target_temp,
     )
