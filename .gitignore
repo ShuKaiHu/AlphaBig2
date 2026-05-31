@@ -21,3 +21,7 @@ overnight_logs/
 *.summary
 *.meta
 *.worker.sh
+artifacts/
+.claude/
+ML_AB/models/
+ML_AB/runs/
