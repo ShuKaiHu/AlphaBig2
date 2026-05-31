@@ -70,11 +70,15 @@ class Big2Net(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim // 2, action_size),
         )
-        # Value head
+        # Value head — 4-dim, one expected (normalized) terminal reward per
+        # ABSOLUTE player index (value[p-1] = expected reward of player p).
+        # This makes the network a proper N-player value function instead of a
+        # 2-player zero-sum scalar, so MCTS backup never has to assume one
+        # player's gain equals another's loss.
         self.value_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
+            nn.Linear(hidden_dim // 2, 4),
             nn.Tanh(),
         )
         # Belief auxiliary head: predict which cards each of 3 opponents holds
@@ -93,7 +97,7 @@ class Big2Net(nn.Module):
             valid_mask:   (B, ACTION_SIZE)  float32, 1=valid, 0=invalid (optional)
         Returns:
             policy_logits: (B, ACTION_SIZE)  — invalid actions masked to -1e9
-            value:         (B, 1)            — tanh output ∈ [-1, 1]
+            value:         (B, 4)            — tanh per absolute player ∈ [-1, 1]
             belief_logits: (B, 156)          — raw logits for 3 opponents × 52 cards
         """
         _, h = self.gru(history_seq)          # h: (1, B, gru_hidden)
@@ -115,7 +119,7 @@ class Big2Net(nn.Module):
         Single-sample inference. Inputs are numpy arrays.
         Returns:
             probs: np.ndarray (ACTION_SIZE,)  softmax probabilities (valid actions only)
-            value: float
+            value: np.ndarray (4,)  — expected normalized reward per absolute player
         """
         self.eval()
         sf = torch.FloatTensor(static_feat).unsqueeze(0)
@@ -123,4 +127,5 @@ class Big2Net(nn.Module):
         vm = torch.FloatTensor(valid_mask).unsqueeze(0) if valid_mask is not None else None
         logits, val, _ = self.forward(sf, hs, vm)
         probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-        return probs, float(val.squeeze().item())
+        value = val.squeeze(0).cpu().numpy().astype(np.float32)  # (4,)
+        return probs, value

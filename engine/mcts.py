@@ -16,19 +16,23 @@ class MCTSNode:
 
     def __init__(self, env, player: int, action=None, parent=None, prior: float = 0.0):
         self.env = env          # Big2Env clone representing state AFTER this action
-        self.player = player    # whose turn it is at this node
+        self.player = player    # whose turn it is at this node (1..4)
         self.action = action    # action that led here (None for root)
         self.parent = parent
         self.children: dict = {}
         self.prior = prior
         self.visit_count = 0
-        self.value_sum = 0.0
-        self._terminal_value = None  # set when node is terminal
+        # 4-dim accumulator: value_sum[p-1] = sum of player p's value estimates
+        # collected through this node (ABSOLUTE player index).
+        self.value_sum = np.zeros(4, dtype=np.float64)
+        self._terminal_value = None  # 4-dim np.array when node is terminal
         self.priors = None           # set by _expand() once model runs
 
-    @property
-    def q_value(self) -> float:
-        return self.value_sum / self.visit_count if self.visit_count > 0 else 0.0
+    def q_value(self, player: int) -> float:
+        """Mean estimated reward for ABSOLUTE `player` (1..4) through this node."""
+        if self.visit_count == 0:
+            return 0.0
+        return float(self.value_sum[player - 1] / self.visit_count)
 
     def is_leaf(self) -> bool:
         """True if model has NOT yet been run on this node (unexpanded)."""
@@ -37,20 +41,31 @@ class MCTSNode:
     def is_terminal(self) -> bool:
         return self._terminal_value is not None
 
-    def ucb_score(self, parent_visits: int, c_puct: float) -> float:
+    def ucb_score(self, parent_visits: int, c_puct: float, perspective: int) -> float:
+        """PUCT score from `perspective` player's point of view.
+
+        The acting player at the PARENT chooses the child maximizing the parent
+        player's OWN value dimension — proper max^n multi-player search, with no
+        zero-sum sign flipping.
+        """
         u = c_puct * self.prior * math.sqrt(parent_visits) / (1 + self.visit_count)
-        return self.q_value + u
+        return self.q_value(perspective) + u
 
 
 class MCTS:
     """
-    PUCT-based MCTS using the Big2Net policy + value heads.
+    PUCT-based multi-player (max^n) MCTS using the Big2Net policy + 4-dim value.
+
+    Big 2 is a 4-player game, NOT 2-player zero-sum, so values are tracked as a
+    4-vector (one expected reward per ABSOLUTE player index).  Each node's
+    acting player selects the action maximizing their OWN value dimension, and
+    backup simply accumulates the leaf's 4-vector along the path (no sign flip,
+    no rotation).  This removes the incorrect "my gain = your loss" assumption
+    that poisons search in games with more than two players.
 
     Lazy expansion: _expand() runs the model and stores priors but does NOT
-    create child nodes. _select() creates exactly ONE child per simulation
-    (the lazily-chosen best action), so each simulation does only 1 env.clone()
-    instead of len(valid_actions) clones. This is ~50-100× faster when the
-    branching factor is large (control=1 hand).
+    create child nodes. _select() creates exactly ONE child per simulation, so
+    each simulation does only 1 env.clone() instead of len(valid_actions).
     """
 
     REWARD_SCALE = 13.0  # normalise raw Big2 rewards by this before tanh
@@ -83,36 +98,38 @@ class MCTS:
         if time_limit is not None:
             deadline = time.time() + time_limit
             while time.time() < deadline:
-                leaf, path = self._select(root)
-                if leaf.is_terminal():
-                    value = leaf._terminal_value
-                elif leaf.is_leaf():
-                    value = self._expand(leaf)
-                else:
-                    value = leaf.q_value
-                self._backup(path, value, leaf.player)
+                self._simulate(root)
         else:
             for _ in range(self.n_simulations):
-                leaf, path = self._select(root)
-                if leaf.is_terminal():
-                    value = leaf._terminal_value
-                elif leaf.is_leaf():
-                    value = self._expand(leaf)
-                else:
-                    value = leaf.q_value
-                self._backup(path, value, leaf.player)
+                self._simulate(root)
 
         visits = self._visit_counts(root, env.ACTION_SIZE)
         action = self._select_action(visits, temperature)
         return action, visits
 
+    def _simulate(self, root: MCTSNode) -> None:
+        leaf, path = self._select(root)
+        if leaf.is_terminal():
+            value_vec = leaf._terminal_value
+        elif leaf.is_leaf():
+            value_vec = self._expand(leaf)
+        else:
+            # Re-selected an already-expanded node without creating a new child:
+            # use its current mean value vector.
+            value_vec = (
+                leaf.value_sum / leaf.visit_count
+                if leaf.visit_count > 0
+                else np.zeros(4, dtype=np.float64)
+            )
+        self._backup(path, value_vec)
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _expand(self, node: MCTSNode) -> float:
+    def _expand(self, node: MCTSNode) -> np.ndarray:
         """
         Run the model on `node.env`, store priors.
         Does NOT create any child nodes (lazy expansion).
-        Returns the value estimate for this node.
+        Returns the 4-dim value estimate (absolute player index) for this node.
         """
         env = node.env
         game = env.game
@@ -120,7 +137,8 @@ class MCTS:
         static = encode_static(game, player)
         history = encode_history_steps(game)
         valid = env.get_valid_actions()
-        probs, value = self.model.predict(static, history, valid)
+        probs, value = self.model.predict(static, history, valid)  # value: (4,)
+        value = np.asarray(value, dtype=np.float64).reshape(4)
 
         valid_actions = np.flatnonzero(valid)
         if len(valid_actions) == 0:
@@ -150,8 +168,9 @@ class MCTS:
         rewards, done = child_env.step(action)
 
         if done:
-            raw = float(rewards[parent.player - 1])
-            term_val = float(np.tanh(raw / self.REWARD_SCALE))
+            # Terminal: full 4-dim normalized reward vector (absolute index).
+            raw = np.asarray(rewards, dtype=np.float64).reshape(4)
+            term_val = np.tanh(raw / self.REWARD_SCALE)
             child_player = parent.player
         else:
             term_val = None
@@ -173,10 +192,10 @@ class MCTS:
         """
         Traverse tree using PUCT until a leaf or terminal node.
 
-        For expanded nodes (have priors), PUCT considers:
-          - existing children: use standard UCB
-          - unvisited actions (in priors but not children): UCB with visit=0
-        When the best action is unvisited, lazily create that child and stop.
+        At each expanded node, the acting player (node.player) picks the action
+        maximizing THEIR OWN value dimension (max^n).  Unvisited actions use
+        Q=0 + exploration term.  When the best action is unvisited, lazily
+        create that child and stop.
         """
         path = [root]
         node = root
@@ -186,7 +205,7 @@ class MCTS:
                 # Model hasn't been run here yet → stop, caller will expand
                 return node, path
 
-            # Node is expanded: pick best action via PUCT
+            perspective = node.player   # acting player maximizes own value
             N = node.visit_count
             sqrt_N = math.sqrt(max(N, 1))
             best_score = -math.inf
@@ -194,7 +213,7 @@ class MCTS:
 
             for a, prior in node.priors.items():
                 if a in node.children:
-                    score = node.children[a].ucb_score(N, self.c_puct)
+                    score = node.children[a].ucb_score(N, self.c_puct, perspective)
                 else:
                     # Unvisited child: Q=0, U = c_puct * prior * sqrt(N) / 1
                     score = self.c_puct * prior * sqrt_N
@@ -216,16 +235,17 @@ class MCTS:
 
         return node, path
 
-    def _backup(self, path, value: float, leaf_player: int):
+    def _backup(self, path, value_vec: np.ndarray) -> None:
         """
-        Backup value. For nodes where it's the same player's turn,
-        add +value; for opponent nodes, add -value.
+        Accumulate the leaf's 4-dim value vector along the path.
+
+        Because values are stored per ABSOLUTE player index, every node on the
+        path adds the SAME vector — no sign flip, no rotation.  Each node's
+        q_value(p) then reflects player p's expected reward conditioned on
+        reaching that node.
         """
-        for node in reversed(path):
-            if node.player == leaf_player:
-                node.value_sum += value
-            else:
-                node.value_sum -= value
+        for node in path:
+            node.value_sum += value_vec
             node.visit_count += 1
 
     @staticmethod

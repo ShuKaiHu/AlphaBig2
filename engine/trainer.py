@@ -55,7 +55,20 @@ def train(
 
     if resume and os.path.exists(latest_path):
         ckpt = torch.load(latest_path, map_location="cpu")
-        missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+        # Filter out parameters whose shape no longer matches (e.g. value_head
+        # changed from 1-dim to 4-dim during the multi-player rebuild). strict=False
+        # only tolerates missing/extra KEYS — a shape mismatch on a shared key
+        # still raises, so we drop those keys and let them re-initialize.
+        old_state = ckpt["model_state"]
+        cur_state = model.state_dict()
+        compatible = {
+            k: v for k, v in old_state.items()
+            if k in cur_state and cur_state[k].shape == v.shape
+        }
+        dropped = [k for k in old_state if k not in compatible]
+        missing, unexpected = model.load_state_dict(compatible, strict=False)
+        if dropped:
+            print(f"Re-initialized (shape changed): {dropped}")
         if missing:
             print(f"New weights (randomly init): {missing}")
         if unexpected:
@@ -81,16 +94,15 @@ def train(
         bc_active = (iteration <= bc_warmup_iters)
         n_bc_mix = int(self_play_episodes * bc_mix_ratio) if not bc_active else 0
         for ep_idx in range(self_play_episodes):
-            if opponent_pool and np.random.rand() < 0.5:
-                opp = make_pool_opponent(np.random.choice(opponent_pool))
-            else:
-                opp = "heuristic"
+            # True 4-player self-play: all four seats are the current model
+            # running MCTS, and every seat contributes training data. This is
+            # what makes the 4-dim value head observe all perspectives.
             use_bc = bc_active or (ep_idx < n_bc_mix)
             data, reward = run_episode(
                 model,
                 n_simulations=n_simulations,
                 temperature=temperature,
-                opponent=opp,
+                opponent=None,         # pure self-play (collect all 4 seats)
                 bc_mode=use_bc,
             )
             buffer.add_episode(data)
@@ -113,7 +125,7 @@ def train(
             hs = torch.FloatTensor(histories)
             vm = torch.FloatTensor(valids)
             pt = torch.FloatTensor(pol_tgts)
-            vt = torch.FloatTensor(val_tgts).unsqueeze(1)
+            vt = torch.FloatTensor(np.asarray(val_tgts))   # (B, 4)
             bt = torch.FloatTensor(bel_tgts)
 
             logits, value, belief_logits = model(sf, hs, vm)
@@ -134,7 +146,7 @@ def train(
             probs_norm = probs / probs_sum
             entropy = -(probs_norm * (probs_norm + 1e-8).log()).sum(dim=-1).mean()
 
-            # Value: MSE vs TD(λ) targets
+            # Value: MSE vs 4-dim Monte-Carlo terminal outcome (per player)
             v_loss = F.mse_loss(value, vt)
 
             # Belief: BCE vs oracle opponent hands (auxiliary, weight=0.1)
@@ -183,15 +195,10 @@ def train(
         log_parts.append(f"[{elapsed:.0f}s]")
         print(" ".join(log_parts))
 
-        # ── Opponent pool update ───────────────────────────────────────────────
-        if iteration % pool_update_freq == 0:
-            snapshot = Big2Net()
-            snapshot.load_state_dict(copy.deepcopy(model.state_dict()))
-            snapshot.eval()
-            opponent_pool.append(snapshot)
-            if len(opponent_pool) > 20:
-                opponent_pool.pop(0)
-            print(f"  Pool updated: {len(opponent_pool)} models")
+        # ── Opponent pool ───────────────────────────────────────────────────────
+        # Disabled during the multi-player rebuild: training is now pure
+        # 4-player self-play (all seats = current model). A frozen-pool league
+        # can be layered back on later via run_episode(opponent={seat: fn}).
 
         # ── Save checkpoint ───────────────────────────────────────────────────
         torch.save(

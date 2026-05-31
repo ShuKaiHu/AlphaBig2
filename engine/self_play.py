@@ -58,52 +58,77 @@ def _model_action(model, env: Big2Env) -> int:
     return int(np.argmax(masked))
 
 
+def _belief_target_for(game, player: int) -> np.ndarray:
+    """Oracle belief target relative to `player`: the cards held by the 3 other
+    players, in ascending absolute-index order excluding `player`."""
+    belief_target = np.zeros(52 * 3, dtype=np.float32)
+    others = [p for p in range(1, 5) if p != player]
+    for opp_idx, opp_p in enumerate(others):
+        for card in game.currentHands[opp_p]:
+            c = int(card)
+            if 1 <= c <= 52:
+                belief_target[opp_idx * 52 + c - 1] = 1.0
+    return belief_target
+
+
 def run_episode(
     model,
     n_simulations: int = 50,
     temperature: float = 1.0,
-    learner_player: int = 1,
-    opponent="heuristic",
+    learner_player: int = 1,   # kept for API compat; reward returned is this player's
+    opponent=None,             # optional dict {player:callable} to override seats
     bc_mode: bool = False,
 ) -> tuple:
     """
-    Run one self-play episode.
+    Run ONE true 4-player self-play episode (max^n MCTS).
 
-    `opponent` can be:
-      - "heuristic": always play lowest valid card
-      - "random":    uniform random valid action
-      - callable:    called with (env) → action int (e.g. a pool model wrapper)
+    All four seats are driven by `model` (running MCTS), and training data is
+    collected for EVERY player's turn — not just one learner.  This is what
+    makes the 4-dim value head see all perspectives and lets the policy head
+    learn from every seat.
 
-    `bc_mode`: if True, use heuristic for learner's ACTION and one-hot of
-               that action as the policy target (behavioral cloning).
-               This bootstraps the model before MCTS self-play.
+    Value targets are the 4-dim Monte-Carlo terminal outcome (one normalized
+    reward per ABSOLUTE player index), shared by every step of the episode —
+    the eventual outcome is the same fact regardless of which state/perspective
+    we are at.
+
+    `opponent`: optional dict mapping player index (1..4) → callable(env)->action
+                to override specific seats with a frozen pool model or heuristic.
+                Overridden seats do NOT contribute training data (they are not
+                the learner).  Default None = pure self-play, collect all seats.
+
+    `bc_mode`: behavioral cloning — every collected seat uses the heuristic
+               action and a one-hot policy target.  Bootstraps the policy.
 
     Returns:
-        data: list of (static, history, valid_mask, policy_target, value_target)
-              for the learner_player's turns.
-        terminal_reward: float — raw terminal reward for learner_player.
+        data: list of (static, history, valid_mask, policy_target,
+                       value_target_vec(4,), belief_target)
+        terminal_reward: float — raw terminal reward for `learner_player`.
     """
     env = Big2Env()
     env.reset()
     mcts = None if bc_mode else MCTS(model, n_simulations=n_simulations)
+    overrides = opponent if isinstance(opponent, dict) else {}
 
-    episode_steps = []  # accumulate learner steps before back-filling values
+    episode_steps = []     # collected (data-contributing) steps
+    terminal_rewards = None
 
     while not env.done:
         player = env.current_player
         game = env.game
 
-        if player == learner_player:
+        if player in overrides:
+            # Frozen / heuristic seat — acts but contributes no training data.
+            action = overrides[player](env)
+        else:
             static = encode_static(game, player)
             history = encode_history_steps(game)
             valid = env.get_valid_actions()
 
             if bc_mode:
-                # Behavioral cloning: use heuristic action as both action + target
                 action = _heuristic_action(env)
                 visits = np.zeros(env.ACTION_SIZE, dtype=np.float32)
                 visits[action] = 1.0
-
             else:
                 action, visits = mcts.run(env, temperature=temperature)
 
@@ -116,49 +141,26 @@ def run_episode(
             else:
                 policy_target = np.ones_like(valid) / len(valid)
 
-            # Belief oracle target: which cards do the 3 opponents hold right now
-            # learner_player=1 → opponents are players 2, 3, 4
-            belief_target = np.zeros(52 * 3, dtype=np.float32)
-            for opp_idx, opp_p in enumerate([p for p in range(1, 5) if p != learner_player]):
-                for card in game.currentHands[opp_p]:
-                    c = int(card)
-                    if 1 <= c <= 52:
-                        belief_target[opp_idx * 52 + c - 1] = 1.0
-
             episode_steps.append({
+                "player": player,
                 "static": static.astype(np.float32),
                 "history": history.astype(np.float32),
                 "valid": valid.astype(np.float32),
                 "policy_target": policy_target.astype(np.float32),
-                "belief_target": belief_target,
+                "belief_target": _belief_target_for(game, player),
             })
-        else:
-            if opponent == "heuristic":
-                action = _heuristic_action(env)
-            elif opponent == "random":
-                action = env.random_action()
-            elif callable(opponent):
-                action = opponent(env)
-            else:
-                action = _heuristic_action(env)
 
         rewards, done = env.step(action)
 
         if done:
-            terminal_reward = float(rewards[learner_player - 1])
-            env.reset()
+            terminal_rewards = np.asarray(rewards, dtype=np.float64).reshape(4)
             break
 
-    # ── TD(λ) value back-fill ──────────────────────────────────────────────
-    n = len(episode_steps)
-    value_targets = np.zeros(n, dtype=np.float32)
-    if n > 0:
-        normalized = float(np.tanh(terminal_reward / REWARD_SCALE))
-        value_targets[-1] = normalized
-        for t in range(n - 2, -1, -1):
-            value_targets[t] = (
-                LAMBDA_TD * value_targets[t + 1] + (1 - LAMBDA_TD) * normalized
-            )
+    # ── 4-dim Monte-Carlo value target (absolute player index) ──────────────
+    if terminal_rewards is None:
+        terminal_rewards = np.zeros(4, dtype=np.float64)
+    value_target_vec = np.tanh(terminal_rewards / REWARD_SCALE).astype(np.float32)
+    terminal_reward = float(terminal_rewards[learner_player - 1])
 
     data = [
         (
@@ -166,10 +168,10 @@ def run_episode(
             step["history"],
             step["valid"],
             step["policy_target"],
-            np.float32(value_targets[i]),
+            value_target_vec.copy(),     # (4,) shared across the episode
             step["belief_target"],
         )
-        for i, step in enumerate(episode_steps)
+        for step in episode_steps
     ]
     return data, terminal_reward
 
