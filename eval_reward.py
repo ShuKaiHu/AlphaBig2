@@ -33,7 +33,7 @@ def _greedy_action(model, env):
 
 
 def _mcts_action(mcts, env):
-    action, _ = mcts.run(env, temperature=1e-3)  # near-greedy on visits
+    action, _ = mcts.run(env, temperature=0.0)  # argmax on visit counts
     return action
 
 
