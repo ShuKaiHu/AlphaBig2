@@ -511,6 +511,26 @@ class big2Game:
         if nCards == 5:
             return card_id in self.currentHands[self.playersGo][enumerateOptions.inverseFiveCardIndices[opt]]
         return False
+
+    def _next_player_has_one_card(self):
+        next_player = self.playersGo + 1
+        if next_player == 5:
+            next_player = 1
+        return self.currentHands[next_player].size == 1
+
+    def _apply_next_one_card_single_rule(self, availableActions):
+        if not self._next_player_has_one_card():
+            return availableActions
+        currHand = self.currentHands[self.playersGo]
+        if currHand.size <= 1:
+            return availableActions
+
+        max_single_action = enumerateOptions.action_index_from_cards([int(np.max(currHand))])
+        for card_id in currHand:
+            single_action = enumerateOptions.action_index_from_cards([int(card_id)])
+            if single_action != max_single_action:
+                availableActions[single_action] = 0
+        return availableActions
             
     def returnAvailableActions(self):
     
@@ -524,8 +544,6 @@ class big2Game:
             nCardsToBeat = len(prevHand)
             prev_is_spade_two = (nCardsToBeat == 1 and prevHand[0] == 52)
             if self.passedThisRound[self.playersGo]:
-                return availableActions
-            if prev_is_spade_two:
                 return availableActions
 
             handOptions = gameLogic.handsAvailable(currHand)
@@ -561,32 +579,31 @@ class big2Game:
                 index = enumerateOptions.action_index_from_cards(cards)
                 availableActions[index] = 1
 
-            if not prev_is_spade_two:
-                prev_is_straight_flush = (nCardsToBeat == 5 and gameLogic.isStraightFlush(prevHand))
-                prev_is_four_kind = (nCardsToBeat == 5 and gameLogic.isFourOfAKind(prevHand))
+            prev_is_straight_flush = (nCardsToBeat == 5 and gameLogic.isStraightFlush(prevHand))
+            prev_is_four_kind = (nCardsToBeat == 5 and gameLogic.isFourOfAKind(prevHand))
 
-                if not prev_is_straight_flush:
-                    four_kind_options = enumerateOptions.fourOfAKindOnlyOptions(
-                        handOptions, prevHand if prev_is_four_kind else None
-                    )
-                    if not isinstance(four_kind_options, int):
-                        for option in four_kind_options:
-                            card_inds = enumerateOptions.inverseFiveCardIndices[option]
-                            cards = currHand[card_inds]
-                            index = enumerateOptions.action_index_from_cards(cards)
-                            availableActions[index] = 1
-
-                straight_flush_options = enumerateOptions.straightFlushOnlyOptions(
-                    handOptions, prevHand if prev_is_straight_flush else None
+            if not prev_is_straight_flush:
+                four_kind_options = enumerateOptions.fourOfAKindOnlyOptions(
+                    handOptions, prevHand if prev_is_four_kind else None
                 )
-                if not isinstance(straight_flush_options, int):
-                    for option in straight_flush_options:
+                if not isinstance(four_kind_options, int):
+                    for option in four_kind_options:
                         card_inds = enumerateOptions.inverseFiveCardIndices[option]
                         cards = currHand[card_inds]
                         index = enumerateOptions.action_index_from_cards(cards)
                         availableActions[index] = 1
+
+            straight_flush_options = enumerateOptions.straightFlushOnlyOptions(
+                handOptions, prevHand if prev_is_straight_flush else None
+            )
+            if not isinstance(straight_flush_options, int):
+                for option in straight_flush_options:
+                    card_inds = enumerateOptions.inverseFiveCardIndices[option]
+                    cards = currHand[card_inds]
+                    index = enumerateOptions.action_index_from_cards(cards)
+                    availableActions[index] = 1
                 
-            return availableActions
+            return self._apply_next_one_card_single_rule(availableActions)
         
         
         else: #player has control.
@@ -622,8 +639,8 @@ class big2Game:
                         continue
                     if self._action_includes_card(int(action), 1):
                         filtered[action] = 1
-                return filtered
-            return availableActions
+                return self._apply_next_one_card_single_rule(filtered)
+            return self._apply_next_one_card_single_rule(availableActions)
 
     def step(self, action):
         opt, nC = enumerateOptions.getOptionNC(action)
