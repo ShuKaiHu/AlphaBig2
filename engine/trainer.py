@@ -43,6 +43,10 @@ def train(
                                 # A positive bonus drove entropy runaway here.
     policy_target_temp: float = 0.7,  # <1 sharpens MCTS visit targets to counter
                                       # the high variance of few-sim visit counts.
+    belief_coef: float = 0.1,  # weight on the opponent-hand belief auxiliary loss.
+                               # Raise it to make the belief head genuinely
+                               # predictive (needed for belief-guided
+                               # determinization sampling at inference).
 ):
     os.makedirs(checkpoint_dir, exist_ok=True)
     latest_path = os.path.join(checkpoint_dir, "latest.pt")
@@ -164,7 +168,7 @@ def train(
             # entropy_coef defaults to 0 (no bonus): a positive bonus actively
             # inflated entropy here and caused runaway. Exploration comes from
             # MCTS root Dirichlet noise instead.
-            loss = p_loss + v_loss + 0.1 * b_loss - entropy_coef * entropy
+            loss = p_loss + v_loss + belief_coef * b_loss - entropy_coef * entropy
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -248,6 +252,8 @@ def _parse_args():
                    help="Entropy BONUS weight (0=off; positive values can cause runaway)")
     p.add_argument("--policy-temp", type=float, default=0.7, dest="policy_target_temp",
                    help="Temperature (<1 sharpens) applied to MCTS visit policy targets")
+    p.add_argument("--belief-coef", type=float, default=0.1, dest="belief_coef",
+                   help="Weight on belief auxiliary loss (raise to make belief predictive)")
     p.add_argument("--torch-threads", type=int, default=3,
                    help="PyTorch intra-op threads (3 = ~30%% of 10-core CPU)")
     return p.parse_args()
@@ -274,4 +280,5 @@ if __name__ == "__main__":
         bc_mix_ratio=args.bc_mix_ratio,
         entropy_coef=args.entropy_coef,
         policy_target_temp=args.policy_target_temp,
+        belief_coef=args.belief_coef,
     )
