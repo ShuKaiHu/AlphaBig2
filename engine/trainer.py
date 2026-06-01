@@ -254,6 +254,8 @@ def _parse_args():
                    help="Temperature (<1 sharpens) applied to MCTS visit policy targets")
     p.add_argument("--belief-coef", type=float, default=0.1, dest="belief_coef",
                    help="Weight on belief auxiliary loss (raise to make belief predictive)")
+    p.add_argument("--checkpoint-dir", type=str, default=CHECKPOINT_DIR, dest="checkpoint_dir",
+                   help="Where to write latest.pt/best.pt (use a separate dir to protect deployment)")
     p.add_argument("--torch-threads", type=int, default=3,
                    help="PyTorch intra-op threads (3 = ~30%% of 10-core CPU)")
     return p.parse_args()
@@ -281,4 +283,5 @@ if __name__ == "__main__":
         entropy_coef=args.entropy_coef,
         policy_target_temp=args.policy_target_temp,
         belief_coef=args.belief_coef,
+        checkpoint_dir=args.checkpoint_dir,
     )
