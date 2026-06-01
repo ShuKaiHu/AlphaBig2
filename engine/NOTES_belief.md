@@ -49,3 +49,25 @@ k = 該對手真實手牌數），對照 `base = k/unknown`（亂猜），看 `l
 
 **若晚期 lift 仍上不去 → 退路**：belief-independent 的「多重 determinization 平均」
 （每步猜 N 副牌各跑 MCTS，平均）—— robust 但較貴。
+
+## 實證結論 (2026-06, eval_determinization.py, 80 games, 等算力=80 sims, vs heuristic)
+
+| config | avg_score | 1st | 4th |
+|--------|-----------|-----|-----|
+| 單一 deep (1×80) uniform | **+12.08** ± 3.76 | 37.5% | 4 |
+| 多重 (4×20) uniform | +9.99 ± 2.57 | 41.2% | 3 |
+| belief 引導 (4×20) | **+4.14** ± 2.32 | 18.8% | 3 |
+
+**重大發現:belief 引導採樣（用目前 lift~1.1 的弱 belief）反而比均勻隨機「更差」。**
+不準的 belief 會把 determinization 偏向錯誤世界、降低多樣性 → 有害。
+→ belief 引導的前提是「belief 必須夠準」；在 late-lift 衝到 ~1.3+ 之前，不要用。
+
+多重 determinization 對 heuristic 對手沒明顯優勢（對手出牌可預測，與其確切手牌弱相關）。
+→ 目前線上「單一 determinization + 1秒 deep MCTS」已接近最優。
+
+**決策:暫停 belief 引導投資（資料顯示目前有害）。聚焦已驗證的槓桿 = value-net 訓練
+（部署強度 +1.6→+7.1）。belief 工具鏈保留，待 belief 準度提升或線上實測暴露
+determinization 弱點時再重啟。**
+
+**對手依賴性警告:以上皆對 heuristic 對手測得。真人會詐唬、其手牌更相關，
+belief/多重 determinization 對真人「可能」較有價值 —— 留待線上實測驗證。**
