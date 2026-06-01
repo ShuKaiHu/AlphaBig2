@@ -71,3 +71,18 @@ determinization 弱點時再重啟。**
 
 **對手依賴性警告:以上皆對 heuristic 對手測得。真人會詐唬、其手牌更相關，
 belief/多重 determinization 對真人「可能」較有價值 —— 留待線上實測驗證。**
+
+## 訓練教訓:不要 re-warm LR (2026-06)
+
+在已收斂的 value net(+7.1, iter 414)上「re-warm LR」(用 --iterations 900 把 cosine
+位置拉回中段、LR 回升)是**破壞性的**:
+- belief 0.4 + re-warm LR → 部署強度 +7.1 → +2.2 (iter 438)
+- belief 0.1 + re-warm LR → 部署強度仍只 +3.4 (iter 548),134 iters 沒爬回
+
+→ 元兇是 re-warm LR 本身。原始「乾淨一次性 cosine 退火(2e-4→floor)」產生的 +7.1
+   才是最佳。事後拉高 LR 會把網路震離好的最優點,且難以恢復。
+→ 要超越 +7.1,正確做法是「全新更長的乾淨 cosine 訓練」或「更多 sims 的乾淨訓練」,
+   不是 re-warm。或者直接用線上實測取得真實訊號。
+
+部署模型鎖定:engine/checkpoints/{best,latest,deploy_best_mcts}.pt = +7.1 (perfect-info
+MCTS 80sims), 不完全資訊單一 deep determinization eval 達 +12。
