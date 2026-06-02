@@ -47,6 +47,9 @@ def train(
                                # Raise it to make the belief head genuinely
                                # predictive (needed for belief-guided
                                # determinization sampling at inference).
+    league: bool = False,      # train some episodes vs frozen PAST versions
+                               # (anti-collapse diversity), not just mirror-self.
+    league_ratio: float = 0.5, # fraction of (post-warmup) episodes using pool opps.
 ):
     os.makedirs(checkpoint_dir, exist_ok=True)
     latest_path = os.path.join(checkpoint_dir, "latest.pt")
@@ -103,15 +106,21 @@ def train(
         bc_active = (iteration <= bc_warmup_iters)
         n_bc_mix = int(self_play_episodes * bc_mix_ratio) if not bc_active else 0
         for ep_idx in range(self_play_episodes):
-            # True 4-player self-play: all four seats are the current model
-            # running MCTS, and every seat contributes training data. This is
-            # what makes the 4-dim value head observe all perspectives.
             use_bc = bc_active or (ep_idx < n_bc_mix)
+            # League: for some episodes, seats 2-4 are frozen PAST versions
+            # (diverse opponents) so the learner (seat 1) is forced to generalize
+            # instead of collapsing to a narrow mirror-self equilibrium. The rest
+            # stay pure 4-player self-play (all seats contribute data).
+            opp = None
+            if (league and opponent_pool and not use_bc
+                    and np.random.rand() < league_ratio):
+                opp = {s: make_pool_opponent(np.random.choice(opponent_pool))
+                       for s in (2, 3, 4)}
             data, reward = run_episode(
                 model,
                 n_simulations=n_simulations,
                 temperature=temperature,
-                opponent=None,         # pure self-play (collect all 4 seats)
+                opponent=opp,
                 bc_mode=use_bc,
             )
             buffer.add_episode(data)
@@ -211,10 +220,17 @@ def train(
         log_parts.append(f"[{elapsed:.0f}s]")
         print(" ".join(log_parts))
 
-        # ── Opponent pool ───────────────────────────────────────────────────────
-        # Disabled during the multi-player rebuild: training is now pure
-        # 4-player self-play (all seats = current model). A frozen-pool league
-        # can be layered back on later via run_episode(opponent={seat: fn}).
+        # ── Opponent pool (league) ───────────────────────────────────────────────
+        # Snapshot the current model into the frozen-opponent pool every
+        # pool_update_freq iters. Keeps the last 10 versions for diversity.
+        if league and iteration % pool_update_freq == 0 and not bc_active:
+            snapshot = Big2Net()
+            snapshot.load_state_dict(copy.deepcopy(model.state_dict()))
+            snapshot.eval()
+            opponent_pool.append(snapshot)
+            if len(opponent_pool) > 10:
+                opponent_pool.pop(0)
+            print(f"  Pool updated: {len(opponent_pool)} frozen opponents")
 
         # ── Save checkpoint ───────────────────────────────────────────────────
         torch.save(
@@ -254,6 +270,10 @@ def _parse_args():
                    help="Temperature (<1 sharpens) applied to MCTS visit policy targets")
     p.add_argument("--belief-coef", type=float, default=0.1, dest="belief_coef",
                    help="Weight on belief auxiliary loss (raise to make belief predictive)")
+    p.add_argument("--league", action="store_true", dest="league",
+                   help="Train some episodes vs frozen past versions (anti-collapse)")
+    p.add_argument("--league-ratio", type=float, default=0.5, dest="league_ratio",
+                   help="Fraction of post-warmup episodes using pool opponents")
     p.add_argument("--checkpoint-dir", type=str, default=CHECKPOINT_DIR, dest="checkpoint_dir",
                    help="Where to write latest.pt/best.pt (use a separate dir to protect deployment)")
     p.add_argument("--torch-threads", type=int, default=3,
@@ -283,5 +303,7 @@ if __name__ == "__main__":
         entropy_coef=args.entropy_coef,
         policy_target_temp=args.policy_target_temp,
         belief_coef=args.belief_coef,
+        league=args.league,
+        league_ratio=args.league_ratio,
         checkpoint_dir=args.checkpoint_dir,
     )

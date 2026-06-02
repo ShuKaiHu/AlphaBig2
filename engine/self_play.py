@@ -11,6 +11,35 @@ REWARD_SCALE = 13.0
 LAMBDA_TD = 0.9
 
 
+def _smart_heuristic_action(env: Big2Env) -> int:
+    """A stronger, more human-like heuristic — used to stress-test the model
+    against an opponent that is NOT the weak 'always lowest' pattern it may have
+    overfit to.
+
+    Lead (control==1): shed the LOWEST single first (probe cheaply, keep combos
+      and high control cards like 2s for later). Only break into pairs / 5-card
+      combos when no singles remain. This preserves combos and high cards rather
+      than dumping a random 5-card combo early (the weak heuristic's mistake).
+    Follow (control==0): minimal winning play (lowest action index already skips
+      bombs since they sort highest), i.e. never overpay / waste a bomb.
+    """
+    import enumerateOptions as _eo
+    valid = np.flatnonzero(env.get_valid_actions())
+    non_pass = valid[valid != PASS_IDX]
+    if len(non_pass) == 0:
+        return PASS_IDX
+    game = env.game
+    if game.control == 1:
+        singles = [a for a in non_pass if a < _eo.PAIR_OFFSET]
+        if singles:
+            return int(min(singles))                      # lowest single
+        pairs = [a for a in non_pass if _eo.PAIR_OFFSET <= a < _eo.FIVE_OFFSET]
+        if pairs:
+            return int(min(pairs))                         # lowest pair
+        return int(min(non_pass))                          # lowest 5-card
+    return int(non_pass.min())                             # minimal winning
+
+
 def _heuristic_action(env: Big2Env) -> int:
     """Smarter heuristic: prefer combos over singles, play minimum winning hand.
 
