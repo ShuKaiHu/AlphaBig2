@@ -86,3 +86,86 @@ belief/多重 determinization 對真人「可能」較有價值 —— 留待線
 
 部署模型鎖定:engine/checkpoints/{best,latest,deploy_best_mcts}.pt = +7.1 (perfect-info
 MCTS 80sims), 不完全資訊單一 deep determinization eval 達 +12。
+
+## belief 的正確抽象層 (使用者洞察, 2026-06) — 重要重構方向
+
+之前 belief head 猜「哪個對手持有哪張牌」是錯的抽象層 (實測 1.1x 無用)。
+人類真正用的 belief 是:
+1. 型別層級排除:「下家沒順子」「上家沒 A」「對家沒 >10 的順」
+2. 牌力支配:「我這張/組現在是不是最大、有沒有人壓得了」
+3. 理性行為推論:從對手 pass/出牌反推手牌結構
+
+### Tier A — 確定性,不需神經網路 (先做, 最高 CP)
+① 牌力支配 (nuts) 特徵:從 (我的手牌 + 已出牌) 精確算未見牌,判斷我的
+   單張/對/順/葫蘆…是否為「當前無敵」。免費、精確。直接回答「會不會被壓」。
+② pass 揭露的 void:理性假設下,某人 pass 掉某型某level → 他沒有更大的該型。
+   逐手累積成 per-opponent 硬約束。
+   例:開 34567 下家 pass → 下家 void 順子≤34567。
+
+### Tier B — 機率性,需好資料 (後做)
+理性推論 (如:出 22255 葫蘆 → 推斷無其他葫蘆,因理性會先出小的)。
+神經 belief 可學,但須對「出牌有資訊量的對手」(真人/強 self-play) 訓練。
+笨 heuristic self-play 學不到 → 解釋了 belief head 為何練不起來。
+
+### 連動 MCTS 的正確方式:約束式 determinization
+- 上次失敗的「belief 軟性加權採樣」→ 偏向錯誤世界 → 有害。
+- 正確:用 Tier A 硬約束做 determinization,排除違反 void 的世界
+  (已知下家沒順,就不發能成順的牌給他)。每個假設世界都合乎推論 → MCTS 有效。
+- 這就是使用者說的「把可能性做些排除」。
+
+### 實作順序建議
+1. Tier A void-tracking + dominance 特徵 (確定性, 純邏輯)
+2. 約束式 determinization (用 void 約束採樣, 取代均勻/軟加權)
+3. dominance 特徵餵進 feature encoding (policy/value 可直接用)
+4. (後) Tier B 神經 belief, 需對強對手/真人資料訓練
+
+### 重要:這些主要對「真人對手」有價值
+heuristic 對手出牌可預測、pass 資訊量低 → determinization/void 對它幫助小
+(已實證)。但真人大量使用 void/dominance 推理 → 此方向專門針對真人,
+只能靠線上實測驗證。
+
+## 線上實測 + 強度診斷 (2026-06-02) — 戰略結論
+
+### 線上對真人 (~68 場, 資料有瑕疵)
+- card-score 可靠片段(開頭12場): avg +2.33, median -2, 4 場出完
+- 真實籌碼 bankroll: 淨 -470 (打平), 但單 session 振幅 ±13000
+- **結論: 對真人 ≈ 打平, 非壓制。** Big2 reward 高變異, 均值被罕見全壘打/災難場主宰。
+
+### 過擬合假設被推翻
+模型對 weak heuristic +1.3, 對 smart heuristic(更像人) +2.6 → **沒有過擬合到弱對手**。
+真相更樸素: **模型就是「heuristic 等級」, 真人比簡單 heuristic 強。**
+差距是模型本身強度, 不是過擬合。
+
+### 強度天花板 = 真正瓶頸
+- 部署 +7.1 (vs heuristic) 但對真人打平 → self-play 收斂在約 amateur 水準。
+- 同配方(sims=50)跑更長(v3, 800 iters)大概率只marginal提升, 不會突破到「贏真人」。
+- 要突破需要改配方, 不是跑更久:
+  1. **更多 self-play sims** (50→150+): 更深搜索 → 更強學習目標 (AlphaZero 標準槓桿)。代價: 每 iter ~3x 慢。
+  2. **incorporate 人類知識**: Tier A void/dominance 推理 (模型現在沒有)。
+  3. **league**: 對過去版本+多樣對手訓練 (目前停用)。
+  4. **真人 game logs 訓練** (imitation from strong humans)。
+- 注意: 純 self-play 在這種大動作空間+不完全資訊+此網路大小, 可能本質上收斂在 amateur。
+  突破需要更大算力(AlphaZero-scale)或人類知識注入。
+
+### 已知良好成果 (別丟失)
+- executor 零失敗 (生產級)
+- 4-player MCTS 修正 (核心 bug 已除)
+- deploy_best_mcts.pt = 競爭級 agent, 對真人打平, 對簡單 heuristic 壓制
+
+### 測量教訓
+- capture_scores.py 有 seq-dedup bug (跨 session seq 重置 → 凍結)。下次: 用 wrapper 直接寫
+  per-game append-only reward log, 或複合鍵 (session,seq)。
+- game_results.jsonl 的 placement/my_remaining 不可靠 (低估出完數)。只信 server round_result。
+
+## 輸牌深度分析 (2026-06-02): 不是 bug, 是被輾壓
+
+深入回推線上最差一場 (-10):
+- self 起手 6666炸彈 + QQQ + 散牌(5,7,7,8,T,J) — 普通牌
+- left 開 AAA葫蘆 → self 用 6666 炸彈壓 (正確!)
+- 對手後續: KK, 999+TT葫蘆, 4444炸彈, 222 — 怪物牌
+- self 的 PASS 幾乎全是被迫 (壓不過), 卡住的中間牌是被對手高牌控場所致
+
+結論: 這場不是模型打錯, 是「真人怪物牌 + self 普通牌」被輾壓。
+→ 支持「general 強度天花板」診斷, 而非「可修復的戰術 bug」。
+→ 含意: 從線上資料「找弱點」payoff 可能有限 — 輸是因為被輾壓, 不是 exploitable bug。
+   真正的槓桿仍是「把網路練更強」(需算力投入), 或接受競爭級但非壓制的結果。
