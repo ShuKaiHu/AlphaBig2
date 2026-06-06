@@ -151,6 +151,7 @@ def repair_train_step(model, optimizer, batch, device, args):
         _policy_advantage,
         _policy_gradient_mask,
         _value,
+        _value_sample_weight,
         _btarget,
         _bmask,
         af,

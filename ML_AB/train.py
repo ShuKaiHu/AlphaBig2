@@ -33,6 +33,14 @@ def adapt_action_feature_state(state, target_state):
     return state
 
 
+def load_compatible_state(model, state):
+    state = adapt_action_feature_state(state, model.state_dict())
+    target_keys = set(model.state_dict())
+    state_keys = set(state)
+    strict = ("history_pos" in state) and target_keys.issubset(state_keys)
+    model.load_state_dict(state, strict=strict)
+
+
 def batch_to_tensors(batch, device):
     card = torch.tensor(np.array([b["card_feats"] for b in batch]), dtype=torch.float32, device=device)
     hist = torch.tensor(np.array([b["history_feats"] for b in batch]), dtype=torch.float32, device=device)
@@ -63,6 +71,11 @@ def batch_to_tensors(batch, device):
         device=device,
     )
     value = torch.tensor(np.array([b["value_target"] for b in batch]), dtype=torch.float32, device=device)
+    value_sample_weight = torch.tensor(
+        np.array([b.get("value_sample_weight", 1.0) for b in batch]),
+        dtype=torch.float32,
+        device=device,
+    )
     btarget = torch.tensor(np.array([b["belief_target"] for b in batch]), dtype=torch.long, device=device)
     bmask = torch.tensor(np.array([b["belief_mask"] for b in batch]), dtype=torch.float32, device=device)
     af = action_features_torch(device).unsqueeze(0).expand(card.shape[0], -1, -1)
@@ -77,6 +90,7 @@ def batch_to_tensors(batch, device):
         policy_advantage,
         policy_gradient_mask,
         value,
+        value_sample_weight,
         btarget,
         bmask,
         af,
@@ -103,6 +117,8 @@ def train_step(
     device,
     value_weight,
     belief_weight,
+    policy_weight=1.0,
+    q_value_weight=0.0,
     five_card_margin_weight=0.0,
     five_card_margin=0.5,
 ):
@@ -117,6 +133,7 @@ def train_step(
         policy_advantage,
         policy_gradient_mask,
         value,
+        value_sample_weight,
         btarget,
         bmask,
         af,
@@ -146,7 +163,23 @@ def train_step(
         )
         hard_loss = hard_loss_all * effective_advantage
         policy_loss = torch.where(policy_target_mask > 0.5, soft_loss, hard_loss).mean()
-    value_loss = F.mse_loss(pred_value, value)
+    value_error = (pred_value - value).pow(2)
+    value_loss = (value_error * value_sample_weight).sum() / (value_sample_weight.sum() + 1e-6)
+    q_value_loss = logits.new_zeros(())
+    if q_value_weight > 0 and any("q_target" in b for b in batch):
+        q_target = torch.tensor(
+            np.array([b.get("q_target", np.zeros(mask.shape[-1], dtype=np.float32)) for b in batch]),
+            dtype=torch.float32,
+            device=device,
+        )
+        q_target_mask = torch.tensor(
+            np.array([b.get("q_target_mask", np.zeros(mask.shape[-1], dtype=np.float32)) for b in batch]),
+            dtype=torch.float32,
+            device=device,
+        )
+        q_pred = model.action_values(card, hist, glob, af, mask)
+        q_error = (q_pred - q_target).pow(2)
+        q_value_loss = (q_error * q_target_mask).sum() / (q_target_mask.sum() + 1e-6)
     belief_loss_all = F.cross_entropy(
         belief_logits.reshape(-1, 3),
         btarget.reshape(-1),
@@ -156,8 +189,9 @@ def train_step(
     belief_loss = (belief_loss_all * bmask).sum() / (bmask.sum() + 1e-6)
     five_margin_loss = _five_card_margin_loss(logits, mask, glob, af, five_card_margin)
     loss = (
-        policy_loss
+        float(policy_weight) * policy_loss
         + value_weight * value_loss
+        + float(q_value_weight) * q_value_loss
         + belief_weight * belief_loss
         + float(five_card_margin_weight) * five_margin_loss
     )
@@ -172,7 +206,10 @@ def train_step(
     return {
         "loss": float(loss.item()),
         "policy_loss": float(policy_loss.item()),
+        "policy_weight": float(policy_weight),
         "value_loss": float(value_loss.item()),
+        "q_value_loss": float(q_value_loss.item()),
+        "q_value_weight": float(q_value_weight),
         "belief_loss": float(belief_loss.item()),
         "five_card_margin_loss": float(five_margin_loss.item()),
         "policy_top1": float(top1),
@@ -195,6 +232,7 @@ def main():
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--value-scale", type=float, default=15.0)
+    parser.add_argument("--policy-weight", type=float, default=1.0)
     parser.add_argument("--value-weight", type=float, default=0.5)
     parser.add_argument("--belief-weight", type=float, default=0.25)
     parser.add_argument("--model-selfplay-after", type=int, default=50)
@@ -223,7 +261,7 @@ def main():
     if args.init:
         payload = torch.load(args.init, map_location=device)
         state = payload["model_state"] if "model_state" in payload else payload
-        model.load_state_dict(adapt_action_feature_state(state, model.state_dict()))
+        load_compatible_state(model, state)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     replay = Replay(args.buffer_capacity)
     metrics_file = open(args.metrics, "a", buffering=1)
@@ -254,6 +292,7 @@ def main():
                     optimizer,
                     batch,
                     device,
+                    policy_weight=args.policy_weight,
                     value_weight=args.value_weight,
                     belief_weight=args.belief_weight,
                     five_card_margin_weight=0.0,

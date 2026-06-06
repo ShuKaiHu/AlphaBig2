@@ -42,6 +42,18 @@ class Big2TransformerNet(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, 1),
         )
+        self.q_state_proj = nn.Linear(d_model, d_model)
+        self.q_action_proj = nn.Sequential(
+            nn.Linear(action_feat_dim, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model),
+        )
+        self.q_head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
         self.belief_head = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model),
@@ -59,6 +71,18 @@ class Big2TransformerNet(nn.Module):
         tokens = torch.cat([g, c, h], dim=1)
         encoded = self.encoder(tokens)
         return encoded[:, 0], encoded[:, 1:53]
+
+    def action_values_from_state(self, state, action_feats, action_mask=None):
+        q_state = self.q_state_proj(state).unsqueeze(1)
+        q_action = self.q_action_proj(action_feats)
+        q = torch.tanh(self.q_head(torch.tanh(q_state + q_action))).squeeze(-1)
+        if action_mask is not None:
+            q = q.masked_fill(action_mask <= 0, -1.0e9)
+        return q
+
+    def action_values(self, card_feats, history_feats, global_feats, action_feats, action_mask=None):
+        state, _card_tokens = self.encode(card_feats, history_feats, global_feats)
+        return self.action_values_from_state(state, action_feats, action_mask)
 
     def forward(self, card_feats, history_feats, global_feats, action_feats, action_mask=None):
         state, card_tokens = self.encode(card_feats, history_feats, global_feats)

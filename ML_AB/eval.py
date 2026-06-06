@@ -40,9 +40,44 @@ def load_model(path, device):
         max_history_len=history_len,
     ).to(device)
     state = _adapt_action_feature_state(state, model.state_dict())
-    model.load_state_dict(state, strict=("history_pos" in state))
+    target_keys = set(model.state_dict())
+    state_keys = set(state)
+    strict = ("history_pos" in state) and target_keys.issubset(state_keys)
+    model.load_state_dict(state, strict=strict)
+    model.has_trained_action_value = all(
+        key in state_keys
+        for key in (
+            "q_state_proj.weight",
+            "q_action_proj.0.weight",
+            "q_head.1.weight",
+        )
+    ) and _checkpoint_trained_action_value(payload)
     model.eval()
     return model
+
+
+def _truthy_q_value_flag(row):
+    if not isinstance(row, dict):
+        return False
+    if bool(row.get("q_head_only")):
+        return True
+    try:
+        return float(row.get("q_value_weight", 0.0)) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _checkpoint_trained_action_value(payload):
+    if not isinstance(payload, dict):
+        return False
+    if _truthy_q_value_flag(payload.get("config")):
+        return True
+    metrics = payload.get("metrics")
+    if _truthy_q_value_flag(metrics):
+        return True
+    if isinstance(metrics, dict) and _truthy_q_value_flag(metrics.get("last")):
+        return True
+    return False
 
 
 def _adapt_action_feature_state(state, target_state):

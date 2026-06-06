@@ -18,13 +18,12 @@ class Node:
         self.action = action
         self.children = {}
         self.visit_count = 0
-        self.value_sum = 0.0
+        self.value_sum = np.zeros((4,), dtype=np.float32)
 
-    @property
-    def q(self):
+    def q(self, player):
         if self.visit_count == 0:
             return 0.0
-        return self.value_sum / float(self.visit_count)
+        return float(self.value_sum[int(player) - 1] / float(self.visit_count))
 
 
 class ModelMCTS:
@@ -39,6 +38,8 @@ class ModelMCTS:
         dirichlet_frac=0.15,
         max_children=64,
         move_time_limit_sec=0.0,
+        root_warmup_children=0,
+        root_allowed_actions=None,
     ):
         self.model = model
         self.device = device
@@ -49,11 +50,17 @@ class ModelMCTS:
         self.dirichlet_frac = float(dirichlet_frac)
         self.max_children = int(max_children)
         self.move_time_limit_sec = float(move_time_limit_sec)
+        self.root_warmup_children = int(root_warmup_children)
+        if root_allowed_actions is None:
+            self.root_allowed_actions = None
+        else:
+            self.root_allowed_actions = {int(action) for action in root_allowed_actions}
 
-    def _terminal_value(self, game, root_player):
+    def _terminal_value(self, game):
         if not game.gameOver:
             return None
-        return float(np.tanh(float(game.rewards[root_player - 1]) / self.value_scale))
+        rewards = np.asarray(game.rewards, dtype=np.float32)
+        return np.tanh(rewards / float(self.value_scale)).astype(np.float32)
 
     def _network(self, game, perspective_player):
         state = encode_game(game, perspective_player, public_belief_prior(game, perspective_player))
@@ -67,11 +74,50 @@ class ModelMCTS:
             logits, value, _belief = self.model(card, hist, glob, af, am)
         return logits.cpu().numpy()[0], float(value.cpu().numpy()[0]), mask
 
-    def _expand(self, node, root_player):
-        logits, value, mask = self._network(node.game, root_player)
+    def _value_vector(self, game, known_values=None):
+        values = np.zeros((4,), dtype=np.float32)
+        known_values = known_values or {}
+        missing_players = []
+        encoded_states = []
+        for player in range(1, 5):
+            if player in known_values:
+                values[player - 1] = float(known_values[player])
+                continue
+            missing_players.append(player)
+            encoded_states.append(encode_game(game, player, public_belief_prior(game, player)))
+        if missing_players:
+            with torch.no_grad():
+                card = torch.tensor(
+                    np.array([state["card_feats"] for state in encoded_states]),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                hist = torch.tensor(
+                    np.array([state["history_feats"] for state in encoded_states]),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                glob = torch.tensor(
+                    np.array([state["global_feats"] for state in encoded_states]),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                af = action_features_torch(self.device).unsqueeze(0).expand(len(missing_players), -1, -1)
+                am = torch.tensor(action_mask(game), dtype=torch.float32, device=self.device).unsqueeze(0)
+                am = am.expand(len(missing_players), -1)
+                _logits, batch_values, _belief = self.model(card, hist, glob, af, am)
+            for player, value in zip(missing_players, batch_values.cpu().numpy()):
+                values[player - 1] = float(value)
+        return values
+
+    def _expand(self, node):
+        actor = int(node.game.playersGo)
+        logits, value, mask = self._network(node.game, actor)
         valid = np.flatnonzero(mask > 0)
+        if node.parent is None and self.root_allowed_actions is not None:
+            valid = np.asarray([int(action) for action in valid if int(action) in self.root_allowed_actions])
         if valid.size == 0:
-            return 0.0
+            return self._value_vector(node.game, known_values={actor: value})
         stable = logits[valid] - np.max(logits[valid])
         probs = np.exp(stable)
         probs_sum = probs.sum()
@@ -90,7 +136,7 @@ class ModelMCTS:
             child_game = node.game.clone()
             apply_action(child_game, int(action))
             node.children[int(action)] = Node(child_game, prior=float(prior), parent=node, action=int(action))
-        return value
+        return self._value_vector(node.game, known_values={actor: value})
 
     def _add_noise(self, root):
         if len(root.children) <= 1:
@@ -102,25 +148,57 @@ class ModelMCTS:
             child.prior = (1.0 - self.dirichlet_frac) * child.prior + self.dirichlet_frac * float(noise[i])
 
     def _select_child(self, node):
+        actor = int(node.game.playersGo)
         sqrt_n = np.sqrt(max(1, node.visit_count))
         best_action = None
         best_score = -1e18
         for action, child in node.children.items():
-            score = child.q + self.c_puct * child.prior * sqrt_n / (1 + child.visit_count)
+            score = child.q(actor) + self.c_puct * child.prior * sqrt_n / (1 + child.visit_count)
             if score > best_score:
                 best_score = score
                 best_action = action
         return node.children[best_action]
 
-    def search(self, game, root_player, temperature=1.0, add_noise=True):
+    def _evaluate_leaf(self, node):
+        value = self._terminal_value(node.game)
+        if value is None:
+            value = self._expand(node)
+        return value
+
+    def _backup(self, path, value):
+        for item in path:
+            item.visit_count += 1
+            item.value_sum += value
+
+    def _warmup_root(self, root, deadline):
+        if self.root_warmup_children <= 0 or not root.children:
+            return
+        children = sorted(root.children.values(), key=lambda child: child.prior, reverse=True)
+        for child in children[: self.root_warmup_children]:
+            if deadline is not None and time.perf_counter() >= deadline:
+                break
+            value = self._evaluate_leaf(child)
+            self._backup([root, child], value)
+
+    def _root_stats(self, root, root_player):
+        visits = np.zeros((ACTION_DIM,), dtype=np.float32)
+        q_values = np.zeros((ACTION_DIM,), dtype=np.float32)
+        for action, child in root.children.items():
+            visits[action] = float(child.visit_count)
+            q_values[action] = child.q(root_player)
+        return visits, q_values
+
+    def search(self, game, root_player, temperature=1.0, add_noise=True, return_stats=False):
         root = Node(game.clone())
-        self._expand(root, root_player)
+        self._expand(root)
         if add_noise:
             self._add_noise(root)
 
         deadline = None
         if self.move_time_limit_sec > 0:
             deadline = time.perf_counter() + self.move_time_limit_sec
+
+        self._warmup_root(root, deadline)
 
         for _ in range(self.simulations):
             if deadline is not None and time.perf_counter() >= deadline:
@@ -130,16 +208,10 @@ class ModelMCTS:
             while node.children:
                 node = self._select_child(node)
                 path.append(node)
-            value = self._terminal_value(node.game, root_player)
-            if value is None:
-                value = self._expand(node, root_player)
-            for item in path:
-                item.visit_count += 1
-                item.value_sum += float(value)
+            value = self._evaluate_leaf(node)
+            self._backup(path, value)
 
-        visits = np.zeros((ACTION_DIM,), dtype=np.float32)
-        for action, child in root.children.items():
-            visits[action] = float(child.visit_count)
+        visits, q_values = self._root_stats(root, root_player)
         valid = visits > 0
         if not np.any(valid):
             if root.children:
@@ -150,10 +222,14 @@ class ModelMCTS:
                 if prior_sum > 0:
                     visits = priors / prior_sum
                 action = int(max(root.children.items(), key=lambda item: item[1].prior)[0])
+                if return_stats:
+                    return action, visits, q_values
                 return action, visits
             legal = np.flatnonzero(action_mask(game) > 0)
             action = int(legal[0]) if legal.size else enumerateOptions.passInd
             visits[action] = 1.0
+            if return_stats:
+                return action, visits, q_values
             return action, visits
 
         if temperature <= 1e-8:
@@ -163,6 +239,8 @@ class ModelMCTS:
             probs[valid] = np.power(visits[valid], 1.0 / max(float(temperature), 1e-8))
             probs = probs / max(float(probs.sum()), 1e-8)
             action = int(np.random.choice(np.arange(ACTION_DIM), p=probs))
+        if return_stats:
+            return action, visits, q_values
         return action, visits
 
 
@@ -193,9 +271,16 @@ def collect_search_episode(
         mask = action_mask(game)
         b_target, b_mask = belief_targets(game, player)
         temp = 1.0 if turns < 12 else 0.25
-        action, visits = mcts.search(game, player, temperature=temp, add_noise=True)
+        action, visits, q_values = mcts.search(
+            game,
+            player,
+            temperature=temp,
+            add_noise=True,
+            return_stats=True,
+        )
         target = visits.astype(np.float32)
         target = target / max(float(target.sum()), 1e-8)
+        q_target_mask = (visits > 0).astype(np.float32)
         samples.append(
             {
                 "card_feats": encoded["card_feats"],
@@ -207,6 +292,8 @@ def collect_search_episode(
                 "player": player,
                 "belief_target": b_target,
                 "belief_mask": b_mask,
+                "q_target": q_values.astype(np.float32),
+                "q_target_mask": q_target_mask,
             }
         )
         apply_action(game, action)

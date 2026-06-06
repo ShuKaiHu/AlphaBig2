@@ -545,6 +545,7 @@ class big2Game:
             prev_is_spade_two = (nCardsToBeat == 1 and prevHand[0] == 52)
             if self.passedThisRound[self.playersGo]:
                 return availableActions
+            availableActions[enumerateOptions.passInd] = 1
 
             handOptions = gameLogic.handsAvailable(currHand)
                 

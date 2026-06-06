@@ -30,8 +30,11 @@ def main():
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--value-scale", type=float, default=15.0)
+    parser.add_argument("--policy-weight", type=float, default=1.0)
     parser.add_argument("--value-weight", type=float, default=0.5)
+    parser.add_argument("--q-value-weight", type=float, default=0.25)
     parser.add_argument("--belief-weight", type=float, default=0.2)
+    parser.add_argument("--q-head-only", action="store_true")
     parser.add_argument("--max-turns", type=int, default=240)
     args = parser.parse_args()
 
@@ -39,6 +42,9 @@ def main():
     set_seed(args.seed)
     device = device_from_arg(args.device)
     model = load_model(args.init, device)
+    if args.q_head_only:
+        for name, param in model.named_parameters():
+            param.requires_grad = name.startswith("q_")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     replay = Replay(capacity=100000)
 
@@ -81,7 +87,9 @@ def main():
                     opt,
                     replay.sample(args.batch_size),
                     device,
+                    policy_weight=args.policy_weight,
                     value_weight=args.value_weight,
+                    q_value_weight=args.q_value_weight,
                     belief_weight=args.belief_weight,
                 )
 
@@ -91,6 +99,7 @@ def main():
             "buffer": len(replay),
             "samples": len(samples),
             "reward_p1": float(rewards[0]),
+            "q_head_only": bool(args.q_head_only),
             "elapsed_sec": round(time.time() - t0, 3),
             **last,
         }

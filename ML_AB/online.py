@@ -51,11 +51,27 @@ def build_public_game(
             game.currentHands[p] = np.zeros((int(opponent_counts.get(str(p), opponent_counts.get(p, 0))),), dtype=int)
 
     game.cardsPlayed = np.zeros((4, 52), dtype=int)
+
+    def mark_played(cards, player=None):
+        row = 0
+        if player is not None:
+            try:
+                player_int = int(player)
+            except (TypeError, ValueError):
+                player_int = 0
+            if 1 <= player_int <= 4:
+                row = player_int - 1
+        for cid in cards or []:
+            game.cardsPlayed[row, int(cid) - 1] = 1
+
     for cid in played_cards:
-        game.cardsPlayed[0, int(cid) - 1] = 1
+        mark_played([cid])
     for p, cards in played_cards_by_player.items():
-        for cid in cards:
-            game.cardsPlayed[int(p) - 1, int(cid) - 1] = 1
+        mark_played(cards, p)
+    if last_hand:
+        mark_played(last_hand, last_player)
+    for entry in action_history or []:
+        mark_played(entry.get("hand"), entry.get("player"))
 
     game.playersGo = int(current_player)
     game.control = 1 if control else 0
