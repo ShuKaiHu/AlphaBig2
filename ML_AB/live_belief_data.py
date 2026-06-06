@@ -1,4 +1,5 @@
 import json
+import os
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -70,13 +71,27 @@ def write_jsonl(path, rows):
 
 
 def default_live_corpus_path():
+    override = os.environ.get("ALPHA_BIG2_LIVE_CORPUS")
+    if override:
+        return Path(override).expanduser()
     repo_root = Path(__file__).resolve().parents[1]
-    return repo_root.parent / "Big2VisionAgent-codex" / "data" / "live_training_corpus.jsonl"
+    return repo_root / "ML_AB" / "data" / "live_training_corpus.jsonl"
 
 
 def default_live_belief_dataset_path():
+    override = os.environ.get("ALPHA_BIG2_LIVE_BELIEF_DATASET")
+    if override:
+        return Path(override).expanduser()
     repo_root = Path(__file__).resolve().parents[1]
-    return repo_root.parent / "Big2VisionAgent-codex" / "data" / "live_belief_dataset.jsonl"
+    return repo_root / "ML_AB" / "data" / "live_belief_dataset.jsonl"
+
+
+def default_vision_agent_dir():
+    override = os.environ.get("ALPHA_BIG2_VISION_AGENT_DIR")
+    if override:
+        return Path(override).expanduser()
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root.parent / "Big2VisionAgent-codex"
 
 
 def resolve_artifact_dir(path_text):
@@ -85,7 +100,8 @@ def resolve_artifact_dir(path_text):
         return path
     candidates = [
         Path.cwd() / path,
-        default_live_corpus_path().parent.parent / path,
+        default_vision_agent_dir() / path,
+        Path(__file__).resolve().parents[1] / path,
     ]
     for candidate in candidates:
         if (candidate / "game_timeline.json").exists():

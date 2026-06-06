@@ -1,7 +1,7 @@
 # ML_AB framework
 
-This is the rebuilt AlphaBig2 training stack. It is kept separate from
-`ML_SKHU/` while it is being validated.
+This is the active AlphaBig2 training stack. Legacy `ML_SKHU/` experiments are
+kept for reference only; new online model work should use `ML_AB`.
 
 ## Design
 
@@ -81,7 +81,7 @@ Export reconstructed hidden-card owner labels from online artifacts:
 
 ```bash
 uv run python -m ML_AB.export_live_belief_dataset \
-  --save /Users/shukaihu/Code_Project_Local/Big2VisionAgent-codex/data/live_belief_dataset.jsonl
+  --save ML_AB/data/live_belief_dataset.jsonl
 ```
 
 Evaluate a checkpoint against public-prior baselines, split by early/mid/late
@@ -90,7 +90,7 @@ phase:
 ```bash
 uv run python -m ML_AB.eval_belief \
   --ckpt ML_AB/models/big2_transformer_best.pt \
-  --dataset /Users/shukaihu/Code_Project_Local/Big2VisionAgent-codex/data/live_belief_dataset.jsonl
+  --dataset ML_AB/data/live_belief_dataset.jsonl
 ```
 
 Until the belief head beats the public prior in these gates, live MCTS should

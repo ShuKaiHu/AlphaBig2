@@ -11,6 +11,7 @@ import enumerateOptions
 
 from ML_AB.data import Replay
 from ML_AB.eval import load_model
+from ML_AB.live_belief_data import default_live_corpus_path
 from ML_AB.models import checkpoint_payload
 from ML_AB.online import build_public_game
 from ML_AB.state import action_mask, encode_game, public_belief_prior
@@ -19,8 +20,7 @@ from ML_AB.utils import configure_torch_threads, device_from_arg, set_seed
 
 
 def _default_corpus_path():
-    repo_root = Path(__file__).resolve().parents[1]
-    return repo_root.parent / "Big2VisionAgent-codex" / "data" / "live_training_corpus.jsonl"
+    return default_live_corpus_path()
 
 
 def _load_rows(path):
